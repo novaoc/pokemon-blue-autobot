@@ -713,6 +713,64 @@ class ProgressionManager:
             return saved
         return valid_steps[0] if valid_steps else "game_complete"
 
+    def sync_with_badges(self, badges: int) -> None:
+        """
+        Reset the progression step to match the actual badge count in memory.
+
+        If the saved step is behind what badges imply (e.g. state says
+        "pallet_start" but 5 badges are present), advances the saved step
+        to the correct minimum for the badge count.
+        """
+        badge_count = bin(badges).count("1")
+
+        # Map badge count → minimum expected step name
+        badge_to_step = {
+            0: None,           # Trust saved state for 0 badges
+            1: "mt_moon",
+            2: "nugget_bridge_bill",
+            3: "rock_tunnel",
+            4: "pokemon_tower",
+            5: "fuchsia_koga",
+            6: "cinnabar_blaine",
+            7: "viridian_giovanni",
+            8: "elite_four",
+        }
+
+        expected_step = badge_to_step.get(badge_count)
+        current_step  = self.state.get("step", "pallet_start")
+
+        if expected_step is None:
+            log.debug("sync_with_badges: 0 badges — keeping saved step '%s'", current_step)
+            return
+
+        try:
+            saved_idx    = self.STEP_ORDER.index(current_step)
+            expected_idx = self.STEP_ORDER.index(expected_step)
+        except ValueError:
+            log.warning(
+                "sync_with_badges: unknown step '%s' or '%s' — resetting to '%s'",
+                current_step, expected_step, expected_step,
+            )
+            self.state["step"] = expected_step
+            self.state["badges"] = badges
+            self.save_state()
+            return
+
+        if saved_idx < expected_idx:
+            log.warning(
+                "sync_with_badges: mismatch! badges=%d but step='%s' — "
+                "advancing to '%s'",
+                badge_count, current_step, expected_step,
+            )
+            self.state["step"] = expected_step
+            self.state["badges"] = badges
+            self.save_state()
+        else:
+            log.info(
+                "sync_with_badges: OK — badges=%d step='%s' (min expected: '%s')",
+                badge_count, current_step, expected_step,
+            )
+
     # ------------------------------------------------------------------
     # Individual progression steps — EVENT DRIVEN
     # ------------------------------------------------------------------
