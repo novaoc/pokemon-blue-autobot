@@ -226,6 +226,7 @@ class Navigator:
         self.emu.button(btn)
         self.emu.tick(self.FRAMES_PER_STEP)
         self.emu.button_release(btn)
+        self.gs.update()  # refresh memory snapshot so position reads are fresh
 
         x_after = self.gs.player_x
         y_after = self.gs.player_y

@@ -181,9 +181,9 @@ class PokemonBot:
             except Exception as exc:
                 log.warning("Failed to load save state: %s", exc)
 
-        # Tick a few frames to let the game boot / stabilize
-        log.info("Warming up emulator (60 frames)…")
-        self.emulator.tick(60)
+        # Boot through title screen into the overworld
+        log.info("Booting through title screen…")
+        self._boot_to_overworld()
 
         # Initial game-state snapshot
         self.game_state.update()
@@ -210,6 +210,60 @@ class PokemonBot:
 
         self._running = True
         log.info("Bot started. Frame count: %d", self.emulator.frame_count)
+
+    def _boot_to_overworld(self, timeout_frames: int = 3000) -> None:
+        """
+        Press through the Game Freak intro, title screen, and main menu
+        until player coordinates are non-zero (overworld loaded).
+
+        Strategy:
+          1. Wait out the Game Freak logo (~180 frames)
+          2. Spam Start + A to skip title and select Continue/New Game
+          3. Poll every 30 frames until player pos != (0, 0)
+        """
+        # 1. Let the Game Freak logo play
+        log.info("_boot_to_overworld: waiting for logo (~180 frames)…")
+        self.emulator.tick(200)
+
+        # 2. Press Start to get past title screen, then aggressively mash A
+        #    to clear Professor Oak's intro dialogue (80+ presses needed)
+        self.emulator.press("start", frames=15)
+        self.emulator.tick(60)
+        for _ in range(100):
+            self.emulator.press("a", frames=10)
+            self.emulator.tick(40)
+
+        # 3. Poll until overworld loads (pos != 0,0 and movement is possible)
+        elapsed = 0
+        log.info("_boot_to_overworld: waiting for overworld + movement…")
+        while elapsed < timeout_frames:
+            self.game_state.update()
+            x, y = self.game_state.player_x, self.game_state.player_y
+            if x != 0 or y != 0:
+                # Verify movement actually works (not still in cutscene)
+                from navigation import Direction
+                self.emulator.button("right")
+                self.emulator.tick(20)
+                self.emulator.button_release("right")
+                self.game_state.update()
+                if self.game_state.player_x != x or self.game_state.player_y != y:
+                    log.info(
+                        "_boot_to_overworld: movement confirmed at (%d,%d)",
+                        self.game_state.player_x, self.game_state.player_y,
+                    )
+                    return
+                # Still stuck — keep mashing A
+                self.emulator.press("a", frames=10)
+                self.emulator.tick(40)
+                elapsed += 55
+            else:
+                self.emulator.press("a", frames=10)
+                self.emulator.tick(40)
+                elapsed += 50
+
+        log.warning(
+            "_boot_to_overworld: timed out after %d frames — proceeding anyway", timeout_frames
+        )
 
     def stop(self) -> None:
         """Clean shutdown — save emulator state and stop PyBoy."""

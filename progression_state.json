@@ -1,5 +1,11 @@
 {
-  "step": "pallet_start",
+  "step": "route1_to_viridian",
   "badges": 0,
-  "completed_steps": []
+  "completed_steps": [
+    "pallet_start",
+    "route1_to_viridian",
+    "viridian_parcel",
+    "viridian_forest",
+    "pewter_brock"
+  ]
 }

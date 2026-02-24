@@ -14,8 +14,8 @@ if TYPE_CHECKING:
 # Player / Map
 # ---------------------------------------------------------------------------
 MAP_ID         = 0xD35E   # Current map ID (1 byte)
-PLAYER_X       = 0xD361   # Player X tile position
-PLAYER_Y       = 0xD362   # Player Y tile position
+PLAYER_Y       = 0xD361   # Player Y tile position (wYCoord in disassembly)
+PLAYER_X       = 0xD362   # Player X tile position (wXCoord in disassembly)
 
 # ---------------------------------------------------------------------------
 # Battle
