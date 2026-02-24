@@ -1,0 +1,17 @@
+Read SPEC_NAVIGATION.md in this directory AND read /Users/wren/nova/games/pokemon_blue_guide.txt for the full walkthrough.
+
+Build navigation.py exactly as specified, including:
+1. Navigator class with move_one_step, navigate_to, press_a_interact, mash_through_dialog
+2. ProgressionManager class with step methods for ALL major game sections (Pallet Town through Elite Four)
+3. Fill in realistic x/y coordinates for major Pokemon Center locations, gym entrances, key NPCs
+4. go_to_pokecenter() helper function
+5. Map ID constants for all major maps
+6. progression_state.json save/load for resuming progress
+7. Create test_navigation.py and run it
+
+Frame timing reference:
+- One tile step: ~16 frames at normal speed, ~2 frames at max speed
+- Dialog advance: press A every ~30 frames until dialog clears
+- Door entry: walk to x,y then press UP or A
+
+When completely finished, run: openclaw system event --text "Done: pokemon-bot navigation module built and tested" --mode now

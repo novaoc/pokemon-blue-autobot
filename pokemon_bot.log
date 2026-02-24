@@ -1,0 +1,7 @@
+2026-02-24 09:11:45,704 [INFO] pokemon_bot: PokemonBot initialized: rom=blueEng.gb headless=True speed=0
+2026-02-24 09:11:45,704 [INFO] pokemon_bot: Starting emulator…
+2026-02-24 09:11:45,713 [INFO] pokemon_bot: Warming up emulator (60 frames)…
+2026-02-24 09:11:45,719 [INFO] navigation: load_state: loaded from /Users/wren/nova/pokemon-bot/progression_state.json — step=pallet_start
+2026-02-24 09:11:45,719 [INFO] pokemon_bot: Bot started. Frame count: 60
+2026-02-24 09:11:45,758 [INFO] navigation: save_state: saved to /Users/wren/nova/pokemon-bot/progression_state.json
+2026-02-24 09:11:45,758 [INFO] pokemon_bot: Emulator stopped. Total frames: 0

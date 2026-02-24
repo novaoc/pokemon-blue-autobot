@@ -1,0 +1,13 @@
+Read SPEC_EMULATOR.md in this directory, then build emulator.py and memory.py exactly as specified.
+
+Key requirements:
+1. Research PyBoy 2.7.0 API - check `python3 -c "import pyboy; help(pyboy.PyBoy)"` and the pyboy docs
+2. Create PokemonEmulator class in emulator.py with all methods listed in the spec
+3. Create GameState class in memory.py with all the Gen 1 Pokemon Blue memory addresses
+4. Create screenshots/ directory
+5. Create test_emulator.py and run it to verify the emulator starts and reads memory
+
+The ROM is at /Users/wren/nova/games/gb/blueEng.gb
+The save is at /Users/wren/nova/games/gb/blueEng.sav
+
+When completely finished, run: openclaw system event --text "Done: pokemon-bot emulator+memory module built and tested" --mode now

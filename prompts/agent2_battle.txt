@@ -1,0 +1,15 @@
+Read SPEC_BATTLE.md in this directory, then build battle.py exactly as specified.
+
+Key requirements:
+1. Complete Gen 1 type effectiveness chart (note the Gen 1 quirks: Ghost vs Psychic = 0, no Dark/Steel types)
+2. All 151 Gen 1 Pokemon species IDs mapped to their types (use internal index numbers, NOT Pokedex numbers)
+3. Key move data dict with move ID -> {name, type, power, pp}
+4. BattleAI class with full battle menu navigation for PyBoy 2.x
+5. Memory addresses for battle state (HP, moves, PP, enemy species)
+6. Create test_battle.py with type effectiveness tests and run it
+
+Reference for Gen 1 internal species IDs vs Pokedex numbers:
+- Internal 0x99=Rhydon, 0x09=Blastoise, 0x70=Bulbasaur, etc.
+- You can find the full mapping at: https://bulbapedia.bulbagarden.net/wiki/List_of_Pok%C3%A9mon_by_index_number_(Generation_I)
+
+When completely finished, run: openclaw system event --text "Done: pokemon-bot battle AI module built and tested" --mode now
