@@ -52,6 +52,37 @@ from battle import BattleAI
 from navigation import Navigator, ProgressionManager, go_to_pokecenter
 
 # ---------------------------------------------------------------------------
+# Screen / menu state detection
+# ---------------------------------------------------------------------------
+
+def detect_menu_state(pyboy) -> str:
+    """
+    Heuristic detection of the current Game Boy screen state.
+
+    Returns one of:
+        "battle"        — currently in a battle
+        "title_or_menu" — on title screen or start menu (not yet in overworld)
+        "overworld"     — player is in the overworld/map
+
+    Detection order (most reliable first):
+    1. in_battle != 0  → "battle"
+    2. party_count > 0 → "overworld"  (party only populated when save is loaded)
+    3. map_id != 0     → "overworld"  (non-zero map means we're in-game)
+    4. otherwise       → "title_or_menu"
+    """
+    map_id    = pyboy.memory[0xD35E]   # MAP_ID
+    in_battle = pyboy.memory[0xD057]   # BATTLE_TYPE
+    party     = pyboy.memory[0xD163]   # PARTY_COUNT — only > 0 when save is loaded
+
+    if in_battle > 0:
+        return "battle"
+    elif party > 0 or map_id != 0:
+        return "overworld"
+    else:
+        return "title_or_menu"
+
+
+# ---------------------------------------------------------------------------
 # Default paths
 # ---------------------------------------------------------------------------
 
@@ -204,6 +235,9 @@ class PokemonBot:
             battle_ai=self._battle_ai,
         )
 
+        # Sync progression state with actual badge count from memory
+        self._sync_progression_state()
+
         # Create screenshot directory if needed
         if self.screenshots:
             os.makedirs(self.screenshot_dir, exist_ok=True)
@@ -211,59 +245,123 @@ class PokemonBot:
         self._running = True
         log.info("Bot started. Frame count: %d", self.emulator.frame_count)
 
-    def _boot_to_overworld(self, timeout_frames: int = 3000) -> None:
+    def _boot_to_overworld(self, timeout_frames: int = 10000) -> None:
         """
-        Press through the Game Freak intro, title screen, and main menu
-        until player coordinates are non-zero (overworld loaded).
+        Navigate the Game Freak intro → title screen → CONTINUE to load save.
 
         Strategy:
-          1. Wait out the Game Freak logo (~180 frames)
-          2. Spam Start + A to skip title and select Continue/New Game
-          3. Poll every 30 frames until player pos != (0, 0)
+          1. Wait out the logo and title screen (~400 frames)
+          2. Press START once to open the main menu, wait 90 frames
+          3. Press A ONCE to select CONTINUE (first option when save exists), wait 180 frames
+          4. Poll for overworld (map or position indicates in-game state)
+          5. Press A occasionally to clear any dialog blocking movement
+          6. Confirm with movement test before returning
+
+        Uses button_down/button_up directly for reliable input regardless of
+        PyBoy version API quirks.
         """
-        # 1. Let the Game Freak logo play
-        log.info("_boot_to_overworld: waiting for logo (~180 frames)…")
-        self.emulator.tick(200)
+        def _hold(btn: str, frames: int = 20) -> None:
+            """Press, hold for frames ticks, release, then wait 10 frames."""
+            self.emulator.button_down(btn)
+            self.emulator.tick(frames)
+            self.emulator.button_up(btn)
+            self.emulator.tick(10)
 
-        # 2. Press Start to get past title screen, then aggressively mash A
-        #    to clear Professor Oak's intro dialogue (80+ presses needed)
-        self.emulator.press("start", frames=15)
-        self.emulator.tick(60)
-        for _ in range(100):
-            self.emulator.press("a", frames=10)
-            self.emulator.tick(40)
+        # --- Phase 1: Wait through logo + title screen ---
+        log.info("_boot_to_overworld: phase 1 — waiting through logo + title (~400 frames)…")
+        self.emulator.tick(400)
 
-        # 3. Poll until overworld loads (pos != 0,0 and movement is possible)
+        # --- Phase 2: Press START to open main menu ---
+        log.info("_boot_to_overworld: phase 2 — pressing START for main menu…")
+        _hold("start", frames=20)
+        self.emulator.tick(90)
+
+        # --- Phase 3: Press A once to select CONTINUE ---
+        log.info("_boot_to_overworld: phase 3 — pressing A to select CONTINUE…")
+        _hold("a", frames=20)
+        self.emulator.tick(180)
+
+        # --- Phase 4: Poll for overworld + movement confirmation ---
+        log.info("_boot_to_overworld: phase 4 — polling for overworld (up to %d frames)…",
+                 timeout_frames)
         elapsed = 0
-        log.info("_boot_to_overworld: waiting for overworld + movement…")
+        frames_since_retry = 0
+        retry_interval = 120  # retry START+A every 120 idle frames if still in menu
+
         while elapsed < timeout_frames:
             self.game_state.update()
-            x, y = self.game_state.player_x, self.game_state.player_y
-            if x != 0 or y != 0:
-                # Verify movement actually works (not still in cutscene)
-                from navigation import Direction
-                self.emulator.button("right")
-                self.emulator.tick(20)
-                self.emulator.button_release("right")
+            state = detect_menu_state(self.emulator.pyboy)
+
+            if state == "overworld":
+                map_id = self.game_state.map_id
+                px, py = self.game_state.player_x, self.game_state.player_y
+                log.info(
+                    "_boot_to_overworld: overworld detected — map=0x%02X pos=(%d,%d)",
+                    map_id, px, py,
+                )
+                # Verify player can actually move (not frozen in cutscene)
+                _hold("right", frames=20)
                 self.game_state.update()
-                if self.game_state.player_x != x or self.game_state.player_y != y:
+                new_px, new_py = self.game_state.player_x, self.game_state.player_y
+                if new_px != px or new_py != py:
                     log.info(
-                        "_boot_to_overworld: movement confirmed at (%d,%d)",
-                        self.game_state.player_x, self.game_state.player_y,
+                        "_boot_to_overworld: ✓ movement confirmed (%d,%d)→(%d,%d) "
+                        "after %d frames total",
+                        px, py, new_px, new_py, elapsed,
                     )
                     return
-                # Still stuck — keep mashing A
-                self.emulator.press("a", frames=10)
-                self.emulator.tick(40)
-                elapsed += 55
-            else:
-                self.emulator.press("a", frames=10)
-                self.emulator.tick(40)
-                elapsed += 50
+                # Position unchanged — cutscene or dialog blocking movement
+                log.debug("_boot_to_overworld: movement blocked, pressing A (dialog?)")
+                _hold("a", frames=20)
+                elapsed += 80
+                frames_since_retry = 0
 
+            elif state == "title_or_menu":
+                # Still waiting — periodically retry START+A in case we missed
+                frames_since_retry += 30
+                if frames_since_retry >= retry_interval:
+                    log.debug(
+                        "_boot_to_overworld: still in title/menu at frame %d — retrying START+A",
+                        elapsed,
+                    )
+                    _hold("start", frames=20)
+                    self.emulator.tick(60)
+                    _hold("a", frames=20)
+                    self.emulator.tick(60)
+                    elapsed += 160
+                    frames_since_retry = 0
+                    continue
+
+            self.emulator.tick(30)
+            elapsed += 30
+            frames_since_retry += 30
+
+        self.game_state.update()
         log.warning(
-            "_boot_to_overworld: timed out after %d frames — proceeding anyway", timeout_frames
+            "_boot_to_overworld: timed out after %d frames — proceeding anyway "
+            "(map=0x%02X pos=(%d,%d))",
+            timeout_frames,
+            self.game_state.map_id,
+            self.game_state.player_x,
+            self.game_state.player_y,
         )
+
+    def _sync_progression_state(self) -> None:
+        """
+        After boot, verify progression_state.json's step matches the badge count
+        in memory. Resets the step forward if there's a mismatch (e.g. save file
+        is ahead of the JSON state).
+        """
+        if self._progression is None:
+            return
+        self.game_state.update()
+        badges = self.game_state.badges
+        current_step = self._progression.get_current_step()
+        log.info(
+            "_sync_progression_state: badges=%s step=%s map=0x%02X",
+            bin(badges), current_step, self.game_state.map_id,
+        )
+        self._progression.sync_with_badges(badges)
 
     def stop(self) -> None:
         """Clean shutdown — save emulator state and stop PyBoy."""
