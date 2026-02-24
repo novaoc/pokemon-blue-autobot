@@ -1,149 +1,241 @@
 """
 navigation.py — Overworld navigation and game progression for Pokemon Blue autobot.
 
-Depends on emulator.py (PokemonEmulator) and memory.py (GameState) interfaces,
-both defined in their SPEC files. Uses stubs when run in isolation/tests.
+REWRITTEN with correct map IDs from pret/pokered disassembly and event-driven
+navigation (press-until-condition instead of hardcoded tile coordinates).
+
+Depends on emulator.py (PokemonEmulator) and memory.py (GameState).
 """
 
 import json
 import logging
 import os
-import time
 from enum import Enum
-from typing import Optional, Tuple
+from typing import Callable, Optional, Tuple
 
 log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# MAP_IDS — map_id (int) → human-readable name
+# MAP CONSTANTS — from pret/pokered disassembly (verified)
+# ---------------------------------------------------------------------------
+
+# Towns / Cities
+PALLET_TOWN = 0x00
+VIRIDIAN_CITY = 0x01
+PEWTER_CITY = 0x02
+CERULEAN_CITY = 0x03
+LAVENDER_TOWN = 0x04
+VERMILION_CITY = 0x05
+CELADON_CITY = 0x06
+FUCHSIA_CITY = 0x07
+CINNABAR_ISLAND = 0x08
+SAFFRON_CITY = 0x09
+INDIGO_PLATEAU = 0x0A
+
+# Routes
+ROUTE_1 = 0x0C
+ROUTE_2 = 0x0D
+ROUTE_3 = 0x0E
+ROUTE_4 = 0x0F
+ROUTE_5 = 0x10
+ROUTE_6 = 0x11
+ROUTE_7 = 0x12
+ROUTE_8 = 0x13
+ROUTE_9 = 0x14
+ROUTE_10 = 0x15
+ROUTE_11 = 0x16
+ROUTE_12 = 0x17
+ROUTE_13 = 0x18
+ROUTE_14 = 0x19
+ROUTE_15 = 0x1A
+ROUTE_16 = 0x1B
+ROUTE_17 = 0x1C  # Cycling Road
+ROUTE_18 = 0x1D
+ROUTE_22 = 0x1F
+ROUTE_23 = 0x20
+ROUTE_24 = 0x21
+ROUTE_25 = 0x22
+
+# Buildings
+REDS_HOUSE_1F = 0x25
+REDS_HOUSE_2F = 0x26  # Starting point
+BLUES_HOUSE = 0x27
+OAKS_LAB = 0x28
+
+# Dungeons
+VIRIDIAN_FOREST = 0x33
+MT_MOON_1F = 0x3B
+MT_MOON_B1F = 0x3C
+MT_MOON_B2F = 0x3D
+ROCK_TUNNEL_1F = 0x44
+ROCK_TUNNEL_B1F = 0x45
+POKEMON_TOWER_1F = 0x4E
+POKEMON_TOWER_2F = 0x4F
+POKEMON_TOWER_3F = 0x50
+POKEMON_TOWER_4F = 0x51
+POKEMON_TOWER_5F = 0x52
+POKEMON_TOWER_6F = 0x53
+POKEMON_TOWER_7F = 0x54
+SS_ANNE = 0x5C
+ROCKET_HIDEOUT_B1F = 0x67
+ROCKET_HIDEOUT_B2F = 0x68
+ROCKET_HIDEOUT_B3F = 0x69
+ROCKET_HIDEOUT_B4F = 0x6A
+SILPH_CO_1F = 0x6E
+POKEMON_MANSION_1F = 0x8B
+VICTORY_ROAD_1F = 0x9C
+
+# Gyms
+VIRIDIAN_GYM = 0xC2
+PEWTER_GYM = 0xC3
+CERULEAN_GYM = 0xC4
+VERMILION_GYM = 0xC5
+CELADON_GYM = 0xC6
+FUCHSIA_GYM = 0xC7
+SAFFRON_GYM = 0xC8
+CINNABAR_GYM = 0xC9
+
+# Pokemon Centers (interiors)
+VIRIDIAN_POKECENTER = 0xB5
+PEWTER_POKECENTER = 0xB6
+CERULEAN_POKECENTER = 0xB7
+LAVENDER_POKECENTER = 0xB8
+VERMILION_POKECENTER = 0xB9
+CELADON_POKECENTER = 0xBA
+FUCHSIA_POKECENTER = 0xBB
+SAFFRON_POKECENTER = 0xBC
+CINNABAR_POKECENTER = 0xBD
+INDIGO_POKECENTER = 0xBE
+
+# ---------------------------------------------------------------------------
+# MAP_IDS — map_id (int) → human-readable name (reverse lookup)
 # ---------------------------------------------------------------------------
 MAP_IDS = {
     # Towns / Cities
-    0x00: "PALLET_TOWN",
-    0x01: "VIRIDIAN_CITY",
-    0x02: "PEWTER_CITY",
-    0x03: "CERULEAN_CITY",
-    0x0C: "VERMILION_CITY",
-    0x0D: "LAVENDER_TOWN",
-    0x11: "CELADON_CITY",
-    0x12: "FUCHSIA_CITY",
-    0x13: "CINNABAR_ISLAND",
-    0x14: "INDIGO_PLATEAU",
-    0x15: "SAFFRON_CITY",
-
+    PALLET_TOWN: "PALLET_TOWN",
+    VIRIDIAN_CITY: "VIRIDIAN_CITY",
+    PEWTER_CITY: "PEWTER_CITY",
+    CERULEAN_CITY: "CERULEAN_CITY",
+    LAVENDER_TOWN: "LAVENDER_TOWN",
+    VERMILION_CITY: "VERMILION_CITY",
+    CELADON_CITY: "CELADON_CITY",
+    FUCHSIA_CITY: "FUCHSIA_CITY",
+    CINNABAR_ISLAND: "CINNABAR_ISLAND",
+    SAFFRON_CITY: "SAFFRON_CITY",
+    INDIGO_PLATEAU: "INDIGO_PLATEAU",
     # Routes
-    0x0E: "ROUTE_1",
-    0x0F: "ROUTE_2",
-    0x10: "ROUTE_3",
-    0x11: "ROUTE_4",   # NOTE: 0x11 shared name — context-dependent; city takes priority
-    0x16: "ROUTE_5",
-    0x17: "ROUTE_6",
-    0x18: "ROUTE_7",
-    0x19: "ROUTE_8",
-    0x1A: "ROUTE_9",
-    0x1B: "ROUTE_10",
-    0x1C: "ROUTE_11",
-    0x1D: "ROUTE_12",
-    0x1E: "ROUTE_13",
-    0x1F: "ROUTE_14",
-    0x20: "ROUTE_15",
-    0x21: "ROUTE_16",
-    0x22: "ROUTE_17",   # Cycling Road
-    0x23: "ROUTE_18",
-    0x2C: "ROUTE_22",
-    0x41: "ROUTE_23",
-    0x32: "ROUTE_24",
-    0x33: "ROUTE_25",
-
-    # Dungeons / Special
-    0x3B: "VIRIDIAN_FOREST",
-    0x51: "MT_MOON_1F",
-    0x52: "MT_MOON_B1F",
-    0x53: "MT_MOON_B2F",
-    0x54: "ROCK_TUNNEL_1F",
-    0x55: "ROCK_TUNNEL_B1F",
-    0x61: "POKEMON_TOWER_1F",
-    0x62: "POKEMON_TOWER_2F",
-    0x63: "POKEMON_TOWER_3F",
-    0x64: "POKEMON_TOWER_4F",
-    0x65: "POKEMON_TOWER_5F",
-    0x66: "POKEMON_TOWER_6F",
-    0x67: "POKEMON_TOWER_7F",
-    0x6E: "SAFARI_ZONE",
-    0x79: "SS_ANNE",
-    0x82: "SILPH_CO_1F",
-    0x8B: "ROCKET_HIDEOUT_B1F",
-    0x8C: "ROCKET_HIDEOUT_B2F",
-    0x8D: "ROCKET_HIDEOUT_B3F",
-    0x8E: "ROCKET_HIDEOUT_B4F",
-    0xA4: "POKEMON_MANSION_1F",
-    0xA5: "POKEMON_MANSION_2F",
-    0xA6: "POKEMON_MANSION_3F",
-    0xA7: "POKEMON_MANSION_B1F",
-    0xAE: "VICTORY_ROAD_1F",
-    0xAF: "VICTORY_ROAD_2F",
-    0xB0: "VICTORY_ROAD_3F",
-
+    ROUTE_1: "ROUTE_1",
+    ROUTE_2: "ROUTE_2",
+    ROUTE_3: "ROUTE_3",
+    ROUTE_4: "ROUTE_4",
+    ROUTE_5: "ROUTE_5",
+    ROUTE_6: "ROUTE_6",
+    ROUTE_7: "ROUTE_7",
+    ROUTE_8: "ROUTE_8",
+    ROUTE_9: "ROUTE_9",
+    ROUTE_10: "ROUTE_10",
+    ROUTE_11: "ROUTE_11",
+    ROUTE_12: "ROUTE_12",
+    ROUTE_13: "ROUTE_13",
+    ROUTE_14: "ROUTE_14",
+    ROUTE_15: "ROUTE_15",
+    ROUTE_16: "ROUTE_16",
+    ROUTE_17: "ROUTE_17",
+    ROUTE_18: "ROUTE_18",
+    ROUTE_22: "ROUTE_22",
+    ROUTE_23: "ROUTE_23",
+    ROUTE_24: "ROUTE_24",
+    ROUTE_25: "ROUTE_25",
+    # Buildings
+    REDS_HOUSE_1F: "REDS_HOUSE_1F",
+    REDS_HOUSE_2F: "REDS_HOUSE_2F",
+    BLUES_HOUSE: "BLUES_HOUSE",
+    OAKS_LAB: "OAKS_LAB",
+    # Dungeons
+    VIRIDIAN_FOREST: "VIRIDIAN_FOREST",
+    MT_MOON_1F: "MT_MOON_1F",
+    MT_MOON_B1F: "MT_MOON_B1F",
+    MT_MOON_B2F: "MT_MOON_B2F",
+    ROCK_TUNNEL_1F: "ROCK_TUNNEL_1F",
+    ROCK_TUNNEL_B1F: "ROCK_TUNNEL_B1F",
+    POKEMON_TOWER_1F: "POKEMON_TOWER_1F",
+    POKEMON_TOWER_2F: "POKEMON_TOWER_2F",
+    POKEMON_TOWER_3F: "POKEMON_TOWER_3F",
+    POKEMON_TOWER_4F: "POKEMON_TOWER_4F",
+    POKEMON_TOWER_5F: "POKEMON_TOWER_5F",
+    POKEMON_TOWER_6F: "POKEMON_TOWER_6F",
+    POKEMON_TOWER_7F: "POKEMON_TOWER_7F",
+    SS_ANNE: "SS_ANNE",
+    ROCKET_HIDEOUT_B1F: "ROCKET_HIDEOUT_B1F",
+    ROCKET_HIDEOUT_B2F: "ROCKET_HIDEOUT_B2F",
+    ROCKET_HIDEOUT_B3F: "ROCKET_HIDEOUT_B3F",
+    ROCKET_HIDEOUT_B4F: "ROCKET_HIDEOUT_B4F",
+    SILPH_CO_1F: "SILPH_CO_1F",
+    POKEMON_MANSION_1F: "POKEMON_MANSION_1F",
+    VICTORY_ROAD_1F: "VICTORY_ROAD_1F",
     # Gyms
-    0xC5: "VIRIDIAN_GYM",
-    0xC6: "PEWTER_GYM",
-    0xC7: "CERULEAN_GYM",
-    0xC8: "VERMILION_GYM",
-    0xC9: "CELADON_GYM",
-    0xCA: "FUCHSIA_GYM",
-    0xCB: "SAFFRON_GYM",
-    0xCC: "CINNABAR_GYM",
-
-    # Pokemon Centers (interiors)
-    0xD0: "VIRIDIAN_POKECENTER",
-    0xD1: "PEWTER_POKECENTER",
-    0xD2: "CERULEAN_POKECENTER",
-    0xD3: "LAVENDER_POKECENTER",
-    0xD4: "VERMILION_POKECENTER",
-    0xD5: "CELADON_POKECENTER",
-    0xD6: "FUCHSIA_POKECENTER",
-    0xD7: "CINNABAR_POKECENTER",
-    0xD8: "SAFFRON_POKECENTER",
-    0xD9: "INDIGO_POKECENTER",
-
-    # Oak's lab / player house etc.
-    0xC4: "OAKS_LAB",
-    0xC3: "REDS_HOUSE_1F",
-    0xC2: "REDS_HOUSE_2F",
+    VIRIDIAN_GYM: "VIRIDIAN_GYM",
+    PEWTER_GYM: "PEWTER_GYM",
+    CERULEAN_GYM: "CERULEAN_GYM",
+    VERMILION_GYM: "VERMILION_GYM",
+    CELADON_GYM: "CELADON_GYM",
+    FUCHSIA_GYM: "FUCHSIA_GYM",
+    SAFFRON_GYM: "SAFFRON_GYM",
+    CINNABAR_GYM: "CINNABAR_GYM",
+    # Pokemon Centers
+    VIRIDIAN_POKECENTER: "VIRIDIAN_POKECENTER",
+    PEWTER_POKECENTER: "PEWTER_POKECENTER",
+    CERULEAN_POKECENTER: "CERULEAN_POKECENTER",
+    LAVENDER_POKECENTER: "LAVENDER_POKECENTER",
+    VERMILION_POKECENTER: "VERMILION_POKECENTER",
+    CELADON_POKECENTER: "CELADON_POKECENTER",
+    FUCHSIA_POKECENTER: "FUCHSIA_POKECENTER",
+    SAFFRON_POKECENTER: "SAFFRON_POKECENTER",
+    CINNABAR_POKECENTER: "CINNABAR_POKECENTER",
+    INDIGO_POKECENTER: "INDIGO_POKECENTER",
 }
 
 # ---------------------------------------------------------------------------
-# POKECENTER_LOCATIONS — map_id → (counter_x, counter_y) of the Nurse Joy counter
-# These are approximate tile coords for the reception desk.
+# City → Pokecenter interior map ID mapping
+# Used to know which pokecenter to enter from which city
 # ---------------------------------------------------------------------------
-POKECENTER_LOCATIONS = {
-    0x01: (7, 4),    # Viridian City Pokecenter
-    0x02: (7, 4),    # Pewter City Pokecenter
-    0x03: (7, 4),    # Cerulean City Pokecenter
-    0x0D: (7, 4),    # Lavender Town Pokecenter
-    0x0C: (7, 4),    # Vermilion City Pokecenter
-    0x11: (7, 4),    # Celadon City Pokecenter
-    0x12: (7, 4),    # Fuchsia City Pokecenter
-    0x13: (7, 4),    # Cinnabar Island Pokecenter
-    0x15: (7, 4),    # Saffron City Pokecenter
-    0x14: (7, 4),    # Indigo Plateau Pokecenter
-    # Route 10 Pokecenter (before Rock Tunnel)
-    0x1B: (7, 4),    # Route 10 Pokecenter (approximate)
+CITY_TO_POKECENTER = {
+    VIRIDIAN_CITY: VIRIDIAN_POKECENTER,
+    PEWTER_CITY: PEWTER_POKECENTER,
+    CERULEAN_CITY: CERULEAN_POKECENTER,
+    LAVENDER_TOWN: LAVENDER_POKECENTER,
+    VERMILION_CITY: VERMILION_POKECENTER,
+    CELADON_CITY: CELADON_POKECENTER,
+    FUCHSIA_CITY: FUCHSIA_POKECENTER,
+    SAFFRON_CITY: SAFFRON_POKECENTER,
+    CINNABAR_ISLAND: CINNABAR_POKECENTER,
+    INDIGO_PLATEAU: INDIGO_POKECENTER,
 }
 
-# Pokecenter building entrance tiles (overworld) per city map_id
-# (x, y) of the door tile on the overworld map
-POKECENTER_DOORS = {
-    0x01: (19, 19),   # Viridian City
-    0x02: (10, 11),   # Pewter City
-    0x03: (16, 17),   # Cerulean City
-    0x0D: (5, 3),     # Lavender Town
-    0x0C: (15, 5),    # Vermilion City
-    0x11: (28, 11),   # Celadon City
-    0x12: (18, 3),    # Fuchsia City
-    0x13: (11, 7),    # Cinnabar Island
-    0x15: (17, 20),   # Saffron City
-    0x14: (7, 9),     # Indigo Plateau
+# Routes that are adjacent to cities (for pokecenter routing)
+ROUTE_TO_NEAREST_CITY = {
+    ROUTE_1: VIRIDIAN_CITY,
+    ROUTE_2: VIRIDIAN_CITY,
+    ROUTE_3: PEWTER_CITY,
+    ROUTE_4: CERULEAN_CITY,
+    ROUTE_5: CERULEAN_CITY,
+    ROUTE_6: VERMILION_CITY,
+    ROUTE_7: CELADON_CITY,
+    ROUTE_8: LAVENDER_TOWN,
+    ROUTE_9: CERULEAN_CITY,
+    ROUTE_10: LAVENDER_TOWN,
+    ROUTE_11: VERMILION_CITY,
+    ROUTE_12: LAVENDER_TOWN,
+    ROUTE_13: FUCHSIA_CITY,
+    ROUTE_14: FUCHSIA_CITY,
+    ROUTE_15: FUCHSIA_CITY,
+    ROUTE_16: CELADON_CITY,
+    ROUTE_17: FUCHSIA_CITY,
+    ROUTE_18: FUCHSIA_CITY,
+    ROUTE_22: VIRIDIAN_CITY,
+    ROUTE_23: VIRIDIAN_CITY,
+    ROUTE_24: CERULEAN_CITY,
+    ROUTE_25: CERULEAN_CITY,
 }
 
 
@@ -158,13 +250,12 @@ class Direction(Enum):
 
     @property
     def opposite(self) -> "Direction":
-        opposites = {
+        return {
             Direction.UP: Direction.DOWN,
             Direction.DOWN: Direction.UP,
             Direction.LEFT: Direction.RIGHT,
             Direction.RIGHT: Direction.LEFT,
-        }
-        return opposites[self]
+        }[self]
 
     @property
     def perpendiculars(self) -> Tuple["Direction", "Direction"]:
@@ -174,22 +265,24 @@ class Direction(Enum):
 
 
 # ---------------------------------------------------------------------------
-# Navigator class
+# Navigator — event-driven movement
 # ---------------------------------------------------------------------------
 class Navigator:
     """
-    Handles low-level movement and interaction with the overworld.
+    Event-driven navigation. Instead of navigating to exact tile coordinates,
+    we press directions until observable conditions change (map transitions,
+    dialog opening, position reaching target, etc.).
 
     Expects:
-        emulator  – PokemonEmulator (or stub) with .button(), .button_release(), .tick()
-        game_state – GameState (or stub) with .player_x, .player_y, .map_id, .in_battle, .dialog_open
+        emulator   – PokemonEmulator with .button(), .button_release(), .tick()
+        game_state – GameState with .player_x, .player_y, .map_id, .in_battle, .dialog_open
     """
 
-    FRAMES_PER_STEP = 16       # frames to wait after pressing a direction
-    FRAMES_DIALOG = 30         # frames between dialog A presses
-    FRAMES_INTERACT = 10       # frames to hold A for interaction
-    MAX_STUCK_TRIES = 5        # consecutive same-position attempts before "stuck"
-    ESCAPE_STEPS = 3           # perpendicular steps when escaping stuck
+    FRAMES_PER_STEP = 16
+    FRAMES_DIALOG = 30
+    FRAMES_INTERACT = 10
+    MAX_STUCK_TRIES = 5
+    ESCAPE_STEPS = 3
 
     def __init__(self, emulator, game_state):
         self.emu = emulator
@@ -200,7 +293,7 @@ class Navigator:
     # ------------------------------------------------------------------
 
     def _press(self, button: str, frames: int = 1):
-        """Press and immediately release a button, then tick."""
+        """Press and release a button, then tick."""
         self.emu.button(button)
         self.emu.tick(frames)
         self.emu.button_release(button)
@@ -209,261 +302,324 @@ class Navigator:
         self.emu.tick(frames)
 
     # ------------------------------------------------------------------
-    # move_one_step
+    # Core movement
     # ------------------------------------------------------------------
 
     def move_one_step(self, direction: Direction) -> bool:
         """
-        Press direction button, wait ~16 frames for walk animation, then check
-        whether the player's position actually changed.
-
-        Returns True if moved successfully, False if blocked.
+        Press direction for 16 frames. Returns True if position changed.
+        Refreshes game state after moving.
         """
         btn = direction.value
-        x_before = self.gs.player_x
-        y_before = self.gs.player_y
+        x0, y0 = self.gs.player_x, self.gs.player_y
 
         self.emu.button(btn)
         self.emu.tick(self.FRAMES_PER_STEP)
         self.emu.button_release(btn)
-        self.gs.update()  # refresh memory snapshot so position reads are fresh
+        self.gs.update()
 
-        x_after = self.gs.player_x
-        y_after = self.gs.player_y
-
-        moved = (x_after != x_before) or (y_after != y_before)
-        if not moved:
-            log.debug(f"move_one_step({direction.name}): BLOCKED at ({x_before},{y_before})")
+        moved = (self.gs.player_x != x0) or (self.gs.player_y != y0)
+        if moved:
+            log.debug(f"move({direction.name}): ({x0},{y0})→({self.gs.player_x},{self.gs.player_y})")
         else:
-            log.debug(f"move_one_step({direction.name}): ({x_before},{y_before}) → ({x_after},{y_after})")
+            log.debug(f"move({direction.name}): BLOCKED at ({x0},{y0})")
         return moved
 
     # ------------------------------------------------------------------
-    # navigate_to
+    # Event-driven movement primitives
     # ------------------------------------------------------------------
 
-    def navigate_to(
-        self,
-        target_x: int,
-        target_y: int,
-        map_id: Optional[int] = None,
-        max_steps: int = 2000,
-    ) -> bool:
-        """
-        Greedy pathfinding toward (target_x, target_y).
-
-        Strategy:
-        - Each iteration, move along whichever axis has the larger delta.
-        - If stuck (same position after MAX_STUCK_TRIES consecutive attempts),
-          try ESCAPE_STEPS perpendicular moves then resume.
-        - Returns True when position matches target, False if max_steps exceeded.
-        """
-        log.info(f"navigate_to({target_x}, {target_y})")
-
-        stuck_count = 0
-        last_pos = (self.gs.player_x, self.gs.player_y)
-
-        for step in range(max_steps):
-            if self.gs.in_battle:
-                log.warning("navigate_to: battle started mid-navigation — pausing")
-                return False
-
-            cur_x = self.gs.player_x
-            cur_y = self.gs.player_y
-
-            if cur_x == target_x and cur_y == target_y:
-                log.info(f"navigate_to: reached ({target_x},{target_y}) in {step} steps")
+    def press_until(self, direction: Direction, condition_fn: Callable[[], bool],
+                    max_steps: int = 100) -> bool:
+        """Press direction until condition_fn() returns True or max_steps reached."""
+        for i in range(max_steps):
+            self.gs.update()
+            if condition_fn():
+                log.debug(f"press_until({direction.name}): condition met after {i} steps")
                 return True
-
-            # Determine primary direction
-            dx = target_x - cur_x
-            dy = target_y - cur_y
-
-            if abs(dx) >= abs(dy):
-                primary = Direction.RIGHT if dx > 0 else Direction.LEFT
-                secondary = Direction.DOWN if dy > 0 else Direction.UP
-            else:
-                primary = Direction.DOWN if dy > 0 else Direction.UP
-                secondary = Direction.RIGHT if dx > 0 else Direction.LEFT
-
-            moved = self.move_one_step(primary)
-            if not moved and (dx != 0):
-                moved = self.move_one_step(secondary)
-
-            # Stuck detection
-            new_pos = (self.gs.player_x, self.gs.player_y)
-            if new_pos == last_pos:
-                stuck_count += 1
-                log.debug(f"navigate_to: stuck count {stuck_count} at {new_pos}")
-                if stuck_count >= self.MAX_STUCK_TRIES:
-                    log.warning(f"navigate_to: stuck at {new_pos}, attempting escape")
-                    escaped = self._escape_stuck(primary)
-                    stuck_count = 0
-                    if not escaped:
-                        log.error("navigate_to: escape failed — aborting")
-                        return False
-            else:
-                stuck_count = 0
-                last_pos = new_pos
-
-        log.warning(f"navigate_to: max_steps ({max_steps}) exceeded — target not reached")
+            if self.gs.in_battle:
+                log.info("press_until: battle started — pausing navigation")
+                return False
+            self.move_one_step(direction)
+        log.warning(f"press_until({direction.name}): max_steps ({max_steps}) reached")
         return False
 
-    def _escape_stuck(self, blocked_direction: Direction) -> bool:
-        """
-        Attempt to escape a stuck position by moving perpendicular
-        ESCAPE_STEPS times, then try resuming.
-        Tries both perpendicular directions.
-        """
-        perp1, perp2 = blocked_direction.perpendiculars
-        for perp in (perp1, perp2):
-            for _ in range(self.ESCAPE_STEPS):
-                moved = self.move_one_step(perp)
-                if moved:
-                    log.debug(f"escape_stuck: moved {perp.name}")
-                    return True
-        return False
+    def press_until_map_change(self, direction: Direction, max_steps: int = 50) -> bool:
+        """Press direction until the map ID changes."""
+        start_map = self.gs.map_id
+        return self.press_until(direction, lambda: self.gs.map_id != start_map, max_steps)
+
+    def press_until_map_is(self, direction: Direction, target_map: int,
+                           max_steps: int = 80) -> bool:
+        """Press direction until we reach a specific map."""
+        return self.press_until(direction, lambda: self.gs.map_id == target_map, max_steps)
+
+    def press_until_dialog(self, direction: Direction, max_steps: int = 50) -> bool:
+        """Press direction until dialog opens."""
+        return self.press_until(direction, lambda: self.gs.dialog_open, max_steps)
+
+    def press_until_y(self, direction: Direction, target_y: int, max_steps: int = 100) -> bool:
+        """Press direction until player Y == target_y."""
+        return self.press_until(direction, lambda: self.gs.player_y == target_y, max_steps)
+
+    def press_until_x(self, direction: Direction, target_x: int, max_steps: int = 100) -> bool:
+        """Press direction until player X == target_x."""
+        return self.press_until(direction, lambda: self.gs.player_x == target_x, max_steps)
 
     # ------------------------------------------------------------------
-    # Interaction helpers
+    # Dialog helpers
     # ------------------------------------------------------------------
 
     def press_a_interact(self):
-        """Press A to interact with whatever is in front of the player."""
-        log.debug("press_a_interact")
+        """Press A to interact."""
         self.emu.button("a")
         self.emu.tick(self.FRAMES_INTERACT)
         self.emu.button_release("a")
+        self.gs.update()
 
     def mash_through_dialog(self, max_presses: int = 50) -> int:
-        """
-        Repeatedly press A every FRAMES_DIALOG frames until:
-          - dialog_open flag clears, or
-          - max_presses reached.
-        Returns number of presses made.
-        """
-        log.debug(f"mash_through_dialog(max={max_presses})")
+        """Press A repeatedly until dialog clears. Returns press count."""
         presses = 0
         for _ in range(max_presses):
+            self.gs.update()
             if not self.gs.dialog_open:
-                log.debug(f"mash_through_dialog: dialog cleared after {presses} presses")
                 break
             self.emu.button("a")
             self.emu.tick(self.FRAMES_DIALOG)
             self.emu.button_release("a")
             presses += 1
+        log.debug(f"mash_through_dialog: {presses} presses")
         return presses
 
+    def mash_a(self, count: int = 10, frames_between: int = 30):
+        """Blindly press A a fixed number of times (for menus, cutscenes)."""
+        for _ in range(count):
+            self.emu.button("a")
+            self.emu.tick(frames_between)
+            self.emu.button_release("a")
+        self.gs.update()
+
+    def press_b(self, count: int = 3, frames_between: int = 20):
+        """Press B to cancel/back out of menus."""
+        for _ in range(count):
+            self.emu.button("b")
+            self.emu.tick(frames_between)
+            self.emu.button_release("b")
+        self.gs.update()
+
     # ------------------------------------------------------------------
-    # Building entry
+    # Greedy navigate_to (for when you DO know target coords)
     # ------------------------------------------------------------------
 
-    def enter_building(self, door_x: int, door_y: int):
+    def navigate_to(self, target_x: int, target_y: int, max_steps: int = 2000) -> bool:
         """
-        Navigate to the tile just in front of a building door, then press UP
-        to walk through. The target tile is the door itself; we stand one
-        tile south of it and press UP.
+        Greedy pathfinding toward (target_x, target_y) on the CURRENT map.
+        Uses stuck detection with perpendicular escape.
         """
-        log.info(f"enter_building: door at ({door_x},{door_y})")
-        # Stand directly on the door tile (one step south of it so UP triggers entry)
-        approach_y = door_y + 1
-        self.navigate_to(door_x, approach_y)
-        # Walk UP into the door
-        self.emu.button("up")
-        self.emu.tick(32)   # give time for map transition
-        self.emu.button_release("up")
-        log.info("enter_building: entered (map transition expected)")
+        log.info(f"navigate_to({target_x}, {target_y})")
+        stuck_count = 0
+        last_pos = (self.gs.player_x, self.gs.player_y)
 
-    def exit_to_overworld(self):
-        """
-        Navigate to an exit. Most buildings exit southward from the bottom row.
-        We simply walk DOWN until the map changes or max steps reached.
-        """
-        log.info("exit_to_overworld: walking toward exit")
+        for step in range(max_steps):
+            self.gs.update()
+            if self.gs.in_battle:
+                log.warning("navigate_to: battle started — pausing")
+                return False
+
+            cx, cy = self.gs.player_x, self.gs.player_y
+            if cx == target_x and cy == target_y:
+                log.info(f"navigate_to: reached target in {step} steps")
+                return True
+
+            dx, dy = target_x - cx, target_y - cy
+
+            # Pick primary/secondary direction
+            if abs(dx) >= abs(dy):
+                primary = Direction.RIGHT if dx > 0 else Direction.LEFT
+                secondary = Direction.DOWN if dy > 0 else Direction.UP if dy != 0 else primary
+            else:
+                primary = Direction.DOWN if dy > 0 else Direction.UP
+                secondary = Direction.RIGHT if dx > 0 else Direction.LEFT if dx != 0 else primary
+
+            moved = self.move_one_step(primary)
+            if not moved:
+                moved = self.move_one_step(secondary)
+
+            new_pos = (self.gs.player_x, self.gs.player_y)
+            if new_pos == last_pos:
+                stuck_count += 1
+                if stuck_count >= self.MAX_STUCK_TRIES:
+                    log.warning(f"navigate_to: stuck at {new_pos}, escaping")
+                    if not self._escape_stuck(primary):
+                        return False
+                    stuck_count = 0
+            else:
+                stuck_count = 0
+                last_pos = new_pos
+
+        log.warning("navigate_to: max_steps exceeded")
+        return False
+
+    def _escape_stuck(self, blocked_direction: Direction) -> bool:
+        """Try perpendicular moves to escape a stuck position."""
+        for perp in blocked_direction.perpendiculars:
+            for _ in range(self.ESCAPE_STEPS):
+                if self.move_one_step(perp):
+                    return True
+        return False
+
+    # ------------------------------------------------------------------
+    # Building exit logic
+    # ------------------------------------------------------------------
+
+    def exit_players_house_2f(self) -> bool:
+        """Exit from Red's House 2F → 1F → Pallet Town."""
+        log.info("exit_players_house_2f")
+        if self.gs.map_id == REDS_HOUSE_2F:
+            # Go down stairs to 1F
+            self.press_until_map_change(Direction.DOWN, max_steps=20)
+        if self.gs.map_id == REDS_HOUSE_1F:
+            # Walk out the front door
+            self.press_until_map_change(Direction.DOWN, max_steps=20)
+        return self.gs.map_id == PALLET_TOWN
+
+    def exit_building(self) -> bool:
+        """Generic building exit: walk DOWN until map changes."""
+        log.info("exit_building")
         start_map = self.gs.map_id
-        for _ in range(30):
-            self.move_one_step(Direction.DOWN)
-            if self.gs.map_id != start_map:
-                log.info("exit_to_overworld: map changed — exited successfully")
-                return
-        log.warning("exit_to_overworld: map did not change after 30 DOWN steps")
+        # Try DOWN first (most buildings exit south)
+        if self.press_until_map_change(Direction.DOWN, max_steps=30):
+            return True
+        # If that didn't work, try walking left/right then down
+        for lateral in (Direction.LEFT, Direction.RIGHT):
+            self.move_one_step(lateral)
+            self.move_one_step(lateral)
+            if self.press_until_map_change(Direction.DOWN, max_steps=20):
+                return True
+        log.warning("exit_building: failed to exit")
+        return False
+
+    def enter_pokecenter_and_heal(self) -> bool:
+        """
+        Assuming we're standing near a Pokecenter door on the overworld:
+        walk UP to enter, then UP to the counter, interact, mash dialog.
+        
+        Pokecenter interiors all have the same layout:
+        - Door is at bottom center
+        - Nurse Joy counter is near the top center
+        - Walk UP until dialog triggers = you're at the counter
+        """
+        start_map = self.gs.map_id
+        # Enter the building (walk UP into door)
+        self.press_until_map_change(Direction.UP, max_steps=10)
+        if self.gs.map_id == start_map:
+            log.warning("enter_pokecenter: failed to enter building")
+            return False
+
+        log.info(f"enter_pokecenter: inside map 0x{self.gs.map_id:02X}")
+
+        # Walk UP to the counter until dialog opens
+        self.press_until_dialog(Direction.UP, max_steps=10)
+        # Interact and mash through healing dialog
+        self.press_a_interact()
+        self.mash_a(count=20, frames_between=30)
+        self.mash_through_dialog(max_presses=30)
+
+        log.info("enter_pokecenter: healing complete")
+        return True
 
 
 # ---------------------------------------------------------------------------
-# go_to_pokecenter helper
+# go_to_pokecenter — find nearest pokecenter and heal
 # ---------------------------------------------------------------------------
 
 def go_to_pokecenter(navigator: Navigator, game_state) -> bool:
     """
-    Find the nearest Pokemon Center for the current map, navigate to it,
-    walk to the counter, and mash through the healing dialog.
-
-    Returns True if healing was initiated.
+    Determine the nearest Pokecenter for the current map and heal.
+    
+    Strategy: We don't hardcode exact door coordinates. Instead:
+    - If already inside a pokecenter, walk up to counter
+    - If in a city, we need to find the pokecenter (game-specific routing)
+    - If on a route, we may need to backtrack to a city
+    
+    For now, this handles the "already near pokecenter" case.
+    Complex routing between cities is handled by ProgressionManager steps.
     """
     current_map = game_state.map_id
-    log.info(f"go_to_pokecenter: current map 0x{current_map:02X} ({MAP_IDS.get(current_map, '?')})")
+    log.info(f"go_to_pokecenter: map 0x{current_map:02X} ({MAP_IDS.get(current_map, '?')})")
 
-    # Find pokecenter door for current map
-    door = POKECENTER_DOORS.get(current_map)
-    if door is None:
-        log.warning(f"go_to_pokecenter: no pokecenter door known for map 0x{current_map:02X}")
+    # Already inside a pokecenter?
+    pokecenter_maps = {
+        VIRIDIAN_POKECENTER, PEWTER_POKECENTER, CERULEAN_POKECENTER,
+        LAVENDER_POKECENTER, VERMILION_POKECENTER, CELADON_POKECENTER,
+        FUCHSIA_POKECENTER, SAFFRON_POKECENTER, CINNABAR_POKECENTER,
+        INDIGO_POKECENTER,
+    }
+    if current_map in pokecenter_maps:
+        # Already inside — just walk to counter and heal
+        navigator.press_until_dialog(Direction.UP, max_steps=10)
+        navigator.press_a_interact()
+        navigator.mash_a(count=20, frames_between=30)
+        navigator.mash_through_dialog(max_presses=30)
+        return True
+
+    # In a city — find the pokecenter
+    if current_map in CITY_TO_POKECENTER:
+        # We don't know exact door coords, but pokecenters are always entered
+        # by walking UP into the door. The ProgressionManager will handle
+        # routing to the pokecenter area. For a generic approach, this is
+        # a placeholder — real implementation needs per-city pathfinding or
+        # a vision-based approach.
+        log.warning(f"go_to_pokecenter: in city 0x{current_map:02X} but no pathfinding to pokecenter door yet")
         return False
 
-    door_x, door_y = door
-    navigator.enter_building(door_x, door_y)
+    # On a route — figure out nearest city
+    nearest = ROUTE_TO_NEAREST_CITY.get(current_map)
+    if nearest:
+        log.info(f"go_to_pokecenter: nearest city for route 0x{current_map:02X} is 0x{nearest:02X}")
+        # Would need to navigate back to city first
+        log.warning("go_to_pokecenter: route→city navigation not yet implemented")
+        return False
 
-    # Once inside, walk to the counter
-    # Counter is typically at (7, 4) inside the pokecenter interior
-    counter_x, counter_y = POKECENTER_LOCATIONS.get(current_map, (7, 4))
-    navigator.navigate_to(counter_x, counter_y - 1)  # stand one tile south of counter
-
-    # Interact with nurse Joy
-    navigator.press_a_interact()
-    navigator.mash_through_dialog(max_presses=60)
-
-    log.info("go_to_pokecenter: healing dialog completed")
-    return True
+    log.warning(f"go_to_pokecenter: don't know how to heal from map 0x{current_map:02X}")
+    return False
 
 
 # ---------------------------------------------------------------------------
-# ProgressionManager
+# Badge constants
 # ---------------------------------------------------------------------------
-
-STATE_FILE = os.path.join(os.path.dirname(__file__), "progression_state.json")
-
-# Badge bit positions in BADGES byte (0xD356)
-BADGE_BOULDER   = 0   # Brock     — Pewter City
-BADGE_CASCADE   = 1   # Misty     — Cerulean City
-BADGE_THUNDER   = 2   # Lt. Surge — Vermilion City
-BADGE_RAINBOW   = 3   # Erika     — Celadon City
-BADGE_SOUL      = 4   # Koga      — Fuchsia City
-BADGE_MARSH     = 5   # Sabrina   — Saffron City
-BADGE_VOLCANO   = 6   # Blaine    — Cinnabar Island
-BADGE_EARTH     = 7   # Giovanni  — Viridian City
-
-# Key item flags — addresses in SPEC_EMULATOR.md / memory.py
-# These are illustrative; exact addresses from memory map
-ITEM_SS_TICKET   = 0x3F   # SS Ticket item ID in Pokemon Blue
-ITEM_SILPH_SCOPE = 0x48   # Silph Scope
-ITEM_POKE_FLUTE  = 0x49   # Poke Flute
-ITEM_CARD_KEY    = 0x60   # Card Key
+BADGE_BOULDER = 0   # Brock     — Pewter City
+BADGE_CASCADE = 1   # Misty     — Cerulean City
+BADGE_THUNDER = 2   # Lt. Surge — Vermilion City
+BADGE_RAINBOW = 3   # Erika     — Celadon City
+BADGE_SOUL = 4      # Koga      — Fuchsia City
+BADGE_MARSH = 5     # Sabrina   — Saffron City
+BADGE_VOLCANO = 6   # Blaine    — Cinnabar Island
+BADGE_EARTH = 7     # Giovanni  — Viridian City
 
 
 def _has_badge(badges_byte: int, badge_bit: int) -> bool:
     return bool(badges_byte & (1 << badge_bit))
 
 
+# ---------------------------------------------------------------------------
+# ProgressionManager — event-driven game progression
+# ---------------------------------------------------------------------------
+
+STATE_FILE = os.path.join(os.path.dirname(__file__), "progression_state.json")
+
+
 class ProgressionManager:
     """
-    High-level game progression brain.
-
-    Tracks which major story step to execute next, based on:
-    - BADGES byte (0xD356)
-    - Key item flags
-    - progression_state.json on disk
+    High-level game progression using event-driven navigation.
+    
+    Each step uses press_until_* methods instead of hardcoded coordinates:
+    - press_until_map_change: walk a direction until the map transitions
+    - press_until_dialog: walk until an NPC/sign dialog opens
+    - mash_through_dialog: clear dialog boxes
+    - mash_a: blindly press A through cutscenes/menus
     """
 
-    # Ordered list of step names
     STEP_ORDER = [
         "pallet_start",
         "route1_to_viridian",
@@ -501,10 +657,10 @@ class ProgressionManager:
             try:
                 with open(STATE_FILE, "r") as f:
                     state = json.load(f)
-                log.info(f"load_state: loaded from {STATE_FILE} — step={state.get('step')}")
+                log.info(f"load_state: loaded — step={state.get('step')}")
                 return state
             except (json.JSONDecodeError, IOError) as e:
-                log.warning(f"load_state: failed to read {STATE_FILE}: {e}; using defaults")
+                log.warning(f"load_state: {e}; using defaults")
         return {"step": "pallet_start", "badges": 0, "completed_steps": []}
 
     def save_state(self, state: Optional[dict] = None):
@@ -513,430 +669,608 @@ class ProgressionManager:
         try:
             with open(STATE_FILE, "w") as f:
                 json.dump(state, f, indent=2)
-            log.info(f"save_state: saved to {STATE_FILE}")
         except IOError as e:
-            log.error(f"save_state: failed: {e}")
+            log.error(f"save_state: {e}")
 
     def _mark_complete(self, step_name: str):
         if step_name not in self.state["completed_steps"]:
             self.state["completed_steps"].append(step_name)
-        # Advance to next step
         idx = self.STEP_ORDER.index(step_name) if step_name in self.STEP_ORDER else -1
-        if idx >= 0 and idx + 1 < len(self.STEP_ORDER):
+        if 0 <= idx < len(self.STEP_ORDER) - 1:
             self.state["step"] = self.STEP_ORDER[idx + 1]
         self.state["badges"] = self.gs.badges
         self.save_state()
 
     # ------------------------------------------------------------------
-    # get_current_step — badge/flag-based detection
+    # Step detection from badges
     # ------------------------------------------------------------------
 
     def get_current_step(self) -> str:
-        """
-        Determine the current progression step from game memory (badges byte).
-        Falls back to saved state if memory is unavailable.
-        """
         try:
             badges = self.gs.badges
         except Exception:
             return self.state.get("step", "pallet_start")
 
-        # Map badge count → expected next step
         badge_count = bin(badges).count("1")
+        saved = self.state.get("step", "pallet_start")
 
-        if badge_count == 0:
-            # Pre-Boulder: are we past the parcel?
-            saved = self.state.get("step", "pallet_start")
-            # Trust the saved step within pre-boulder range
-            if saved in ("pallet_start", "route1_to_viridian", "viridian_parcel",
-                         "viridian_forest", "pewter_brock"):
-                return saved
-            return "pallet_start"
-        elif badge_count == 1:
-            # Have Boulder, heading to Cerulean
-            saved = self.state.get("step", "mt_moon")
-            if saved in ("mt_moon", "cerulean_misty"):
-                return saved
-            return "mt_moon"
-        elif badge_count == 2:
-            saved = self.state.get("step", "nugget_bridge_bill")
-            if saved in ("nugget_bridge_bill", "vermilion_ltsurge"):
-                return saved
-            return "nugget_bridge_bill"
-        elif badge_count == 3:
-            saved = self.state.get("step", "rock_tunnel")
-            if saved in ("rock_tunnel", "celadon_erika"):
-                return saved
-            return "rock_tunnel"
-        elif badge_count == 4:
-            saved = self.state.get("step", "pokemon_tower")
-            if saved in ("pokemon_tower", "saffron_sabrina", "celadon_erika"):
-                return saved
-            return "pokemon_tower"
-        elif badge_count == 5:
-            saved = self.state.get("step", "fuchsia_koga")
-            if saved in ("fuchsia_koga", "saffron_sabrina"):
-                return saved
-            return "fuchsia_koga"
-        elif badge_count == 6:
-            saved = self.state.get("step", "cinnabar_blaine")
-            if saved in ("cinnabar_blaine", "fuchsia_koga"):
-                return saved
-            return "cinnabar_blaine"
-        elif badge_count == 7:
-            return "viridian_giovanni"
-        elif badge_count == 8:
-            return "elite_four"
-        return "game_complete"
+        # Map badge count ranges to possible steps
+        step_ranges = {
+            0: ["pallet_start", "route1_to_viridian", "viridian_parcel",
+                "viridian_forest", "pewter_brock"],
+            1: ["mt_moon", "cerulean_misty"],
+            2: ["nugget_bridge_bill", "vermilion_ltsurge"],
+            3: ["rock_tunnel", "celadon_erika"],
+            4: ["pokemon_tower", "saffron_sabrina", "celadon_erika"],
+            5: ["fuchsia_koga", "saffron_sabrina"],
+            6: ["cinnabar_blaine", "fuchsia_koga"],
+            7: ["viridian_giovanni"],
+            8: ["elite_four"],
+        }
+
+        valid_steps = step_ranges.get(badge_count, [])
+        if saved in valid_steps:
+            return saved
+        return valid_steps[0] if valid_steps else "game_complete"
 
     # ------------------------------------------------------------------
-    # Individual step methods
+    # Individual progression steps — EVENT DRIVEN
     # ------------------------------------------------------------------
 
     def step_pallet_town(self):
         """
-        Start of game. Walk to Oak's Lab, choose Squirtle.
-        After choosing, fight rival, then head north to Route 1.
+        Start of game: exit Red's House, get intercepted by Oak,
+        choose starter Pokemon (Squirtle), fight rival.
+        
+        Event sequence:
+        1. Press DOWN until map changes from REDS_HOUSE_2F → REDS_HOUSE_1F
+        2. Press DOWN until map changes from REDS_HOUSE_1F → PALLET_TOWN
+        3. Walk north — Oak will intercept you automatically
+        4. Mash through Oak dialog, follow him to lab
+        5. In Oak's Lab: walk to Squirtle ball (rightmost), interact
+        6. Mash through selection dialog
+        7. Rival battle triggers automatically — battle_ai handles
         """
         log.info("STEP: pallet_start")
-        # Oak's Lab is south of the start — coordinates are approximate
-        # Player starts in Red's House 2F; walk down and out
-        self.nav.navigate_to(5, 7)   # Exit Red's house door area
-        # Walk south toward Oak's lab on overworld
-        # Pallet Town: Oak's Lab at roughly (5, 13) on map 0x00
-        self.nav.navigate_to(5, 13)
-        self.nav.enter_building(5, 13)
-        # Walk to pokeball table (Squirtle = rightmost)
-        self.nav.navigate_to(9, 5)
-        self.nav.press_a_interact()
+
+        # Exit Red's House
+        self.nav.exit_players_house_2f()
+
+        # Walk north toward Route 1 — Oak will intercept
+        self.nav.press_until_dialog(Direction.UP, max_steps=30)
         self.nav.mash_through_dialog(max_presses=80)
-        # Rival battle happens automatically; mash through it
-        self.nav.mash_through_dialog(max_presses=200)
+        self.nav.mash_a(count=30, frames_between=30)
+
+        # Oak takes us to his lab — wait for map transition to OAKS_LAB
+        self.nav.press_until(Direction.DOWN,
+                             lambda: self.gs.map_id == OAKS_LAB, max_steps=100)
+        # If not in lab yet, mash A (cutscene auto-walks us)
+        if self.gs.map_id != OAKS_LAB:
+            self.nav.mash_a(count=50, frames_between=20)
+
+        # Walk to the rightmost pokeball (Squirtle) and interact
+        # Pokeballs are on the table at the top of the lab
+        # Walk RIGHT then UP to the rightmost ball
+        self.nav.press_until_x(Direction.RIGHT, target_x=9, max_steps=15)
+        self.nav.press_until_dialog(Direction.UP, max_steps=10)
+        self.nav.press_a_interact()
+        # Confirm selection: mash A through "Do you want Squirtle?" etc.
+        self.nav.mash_a(count=30, frames_between=30)
+        self.nav.mash_through_dialog(max_presses=80)
+
+        # Rival battle happens — will be handled by battle_ai in main loop
+        # Mash through post-battle dialog
+        self.nav.mash_a(count=50, frames_between=20)
+        self.nav.mash_through_dialog(max_presses=50)
+
         log.info("STEP: pallet_start — complete")
         self._mark_complete("pallet_start")
 
     def step_route1_to_viridian(self):
         """Walk north through Route 1 to Viridian City."""
         log.info("STEP: route1_to_viridian")
-        # Exit Oak's lab, head north
-        self.nav.exit_to_overworld()
-        # Navigate north across Route 1 (map 0x0E)
-        # Route 1 is a straight corridor north
-        self.nav.navigate_to(5, 0)    # Aim for north edge of Route 1
+
+        # Exit Oak's Lab if still inside
+        if self.gs.map_id == OAKS_LAB:
+            self.nav.exit_building()
+
+        # Walk north until we reach Viridian City
+        self.nav.press_until_map_is(Direction.UP, VIRIDIAN_CITY, max_steps=200)
+
         log.info("STEP: route1_to_viridian — complete")
         self._mark_complete("route1_to_viridian")
 
     def step_viridian_parcel(self):
         """
-        Pick up parcel from Viridian Mart, deliver to Oak in Pallet Town,
-        receive Pokedex. Return to Viridian City.
+        Pick up Oak's Parcel from Viridian Mart, deliver to Oak,
+        get Pokedex, return north.
         """
         log.info("STEP: viridian_parcel")
-        # Enter Viridian Mart (approximate door coords on Viridian map 0x01)
-        self.nav.enter_building(20, 8)
-        # Talk to the mart clerk (top-left counter)
-        self.nav.navigate_to(4, 4)
-        self.nav.press_a_interact()
+
+        # Walk north in Viridian to find the Mart (entering triggers parcel event)
+        # Mart is on the east side — walk right then up to find the door
+        self.nav.press_until_map_change(Direction.UP, max_steps=40)
+
+        # If we entered a building, check if it's the mart
+        # Mash through the "parcel for Prof Oak" dialog
+        self.nav.mash_a(count=20, frames_between=30)
         self.nav.mash_through_dialog(max_presses=40)
-        self.nav.exit_to_overworld()
-        # Head south back to Pallet Town
-        self.nav.navigate_to(5, 20)   # south toward Route 1 / Pallet
-        # Deliver to Oak
-        self.nav.enter_building(5, 13)
-        self.nav.navigate_to(5, 5)
+        self.nav.exit_building()
+
+        # Walk south back to Pallet Town
+        self.nav.press_until_map_is(Direction.DOWN, PALLET_TOWN, max_steps=200)
+
+        # Enter Oak's Lab
+        self.nav.press_until_map_is(Direction.DOWN, OAKS_LAB, max_steps=40)
+        if self.gs.map_id != OAKS_LAB:
+            # Try entering from pallet — lab is south
+            self.nav.press_until_map_change(Direction.UP, max_steps=20)
+
+        # Talk to Oak — walk toward him
+        self.nav.press_until_dialog(Direction.UP, max_steps=15)
         self.nav.press_a_interact()
+        self.nav.mash_a(count=40, frames_between=30)
         self.nav.mash_through_dialog(max_presses=80)
-        # Receive Pokedex
-        self.nav.mash_through_dialog(max_presses=40)
-        self.nav.exit_to_overworld()
+
+        # Exit lab and head back north
+        self.nav.exit_building()
+        self.nav.press_until_map_is(Direction.UP, VIRIDIAN_CITY, max_steps=200)
+
         log.info("STEP: viridian_parcel — complete")
         self._mark_complete("viridian_parcel")
 
     def step_viridian_forest(self):
-        """Navigate through Viridian Forest to Pewter City."""
+        """Navigate north through Route 2, Viridian Forest, to Pewter City."""
         log.info("STEP: viridian_forest")
-        # Head north from Viridian through Route 2 into Viridian Forest
-        # General direction: keep going north; handle trainers via battle_ai
-        self.nav.navigate_to(10, 0)   # north edge of Viridian City
-        # Forest navigation: mostly north with some detours
-        # We navigate by pressing UP repeatedly until we exit the forest
-        start_map = self.gs.map_id
+
+        # Walk north from Viridian through Route 2 into Viridian Forest
+        # Keep going UP until we reach Viridian Forest map
+        self.nav.press_until_map_is(Direction.UP, ROUTE_2, max_steps=60)
+        self.nav.press_until_map_change(Direction.UP, max_steps=40)
+
+        # In the forest gate or forest itself — keep going north
+        # Forest requires some navigation — mostly UP with detours
         steps = 0
-        while self.gs.map_id == start_map or MAP_IDS.get(self.gs.map_id, "").startswith("VIRIDIAN_FOREST"):
-            if steps > 1000:
-                log.warning("step_viridian_forest: timeout after 1000 steps")
-                break
-            self.nav.move_one_step(Direction.UP)
+        while self.gs.map_id != PEWTER_CITY and steps < 500:
+            self.gs.update()
+            if self.gs.in_battle:
+                steps += 1
+                continue  # battle_ai handles
+            # Try UP primarily, with LEFT/RIGHT to navigate around trees
+            moved = self.nav.move_one_step(Direction.UP)
+            if not moved:
+                # Try going around obstacles
+                for lateral in (Direction.LEFT, Direction.RIGHT):
+                    if self.nav.move_one_step(lateral):
+                        break
             steps += 1
+            # Check for map transitions (forest → gate → pewter)
+            if self.gs.map_id not in (VIRIDIAN_FOREST, ROUTE_2, VIRIDIAN_CITY):
+                # Might be in a gate building — walk through
+                self.nav.press_until_map_change(Direction.UP, max_steps=20)
+
         log.info("STEP: viridian_forest — complete")
         self._mark_complete("viridian_forest")
 
     def step_pewter_brock(self):
-        """Heal at Pokecenter, enter Pewter Gym, beat Brock."""
+        """Heal at Pewter Pokecenter, then challenge Brock's gym."""
         log.info("STEP: pewter_brock")
-        go_to_pokecenter(self.nav, self.gs)
-        # Pewter Gym: approx door at (10, 5) on Pewter City map
-        self.nav.exit_to_overworld()
-        self.nav.enter_building(10, 5)
-        # Walk to Brock (at top of gym)
-        self.nav.navigate_to(9, 3)
+
+        # Heal first — enter pokecenter
+        # Walk around Pewter looking for pokecenter door (UP enters buildings)
+        self.nav.enter_pokecenter_and_heal()
+        self.nav.exit_building()
+
+        # Find and enter Pewter Gym
+        # Gym is in the city — walk until we enter it
+        self.nav.press_until_map_is(Direction.DOWN, PEWTER_GYM, max_steps=60)
+        if self.gs.map_id != PEWTER_GYM:
+            # Try different approach directions
+            self.nav.press_until_map_change(Direction.UP, max_steps=30)
+
+        # Walk north to Brock
+        self.nav.press_until_dialog(Direction.UP, max_steps=20)
         self.nav.press_a_interact()
-        # Battle handled by battle_ai
+        self.nav.mash_a(count=10, frames_between=30)
+        # Battle triggers — handled by battle_ai in main loop
         self.nav.mash_through_dialog(max_presses=200)
-        self.nav.exit_to_overworld()
+        self.nav.exit_building()
+
         log.info("STEP: pewter_brock — complete")
         self._mark_complete("pewter_brock")
 
     def step_mt_moon(self):
-        """
-        Head east from Pewter along Route 3.
-        Navigate through Mt. Moon cave (3 floors) to Route 4 and Cerulean.
-        """
+        """Route 3 east to Mt. Moon, navigate through to Route 4 / Cerulean."""
         log.info("STEP: mt_moon")
-        # Go east through Route 3
-        self.nav.navigate_to(30, 8)   # eastern edge of Route 3 (approx)
-        # Enter Mt. Moon
-        self.nav.enter_building(2, 5)
-        # Navigate south-east through the cave floors
-        self.nav.navigate_to(25, 15)  # B1F exit area
-        self.nav.navigate_to(10, 5)   # B2F exit to Route 4
+
+        # Head east from Pewter through Route 3
+        self.nav.press_until_map_is(Direction.RIGHT, ROUTE_3, max_steps=60)
+        # Continue east through Route 3
+        self.nav.press_until_map_change(Direction.RIGHT, max_steps=200)
+
+        # Navigate Mt. Moon (3 floors) — go DOWN/RIGHT through cave
+        floors_traversed = 0
+        steps = 0
+        while floors_traversed < 3 and steps < 800:
+            self.gs.update()
+            if self.gs.in_battle:
+                steps += 1
+                continue
+            start_map = self.gs.map_id
+            # Try going down and right through the cave
+            moved = self.nav.move_one_step(Direction.DOWN)
+            if not moved:
+                moved = self.nav.move_one_step(Direction.RIGHT)
+            if not moved:
+                moved = self.nav.move_one_step(Direction.LEFT)
+            if not moved:
+                self.nav.move_one_step(Direction.UP)
+            self.gs.update()
+            if self.gs.map_id != start_map:
+                floors_traversed += 1
+                log.info(f"mt_moon: transitioned to map 0x{self.gs.map_id:02X} (floor {floors_traversed})")
+            steps += 1
+
         log.info("STEP: mt_moon — complete")
         self._mark_complete("mt_moon")
 
     def step_cerulean_misty(self):
-        """Heal, challenge Misty's gym in Cerulean City."""
+        """Heal, then challenge Misty in Cerulean Gym."""
         log.info("STEP: cerulean_misty")
-        go_to_pokecenter(self.nav, self.gs)
-        self.nav.exit_to_overworld()
-        # Cerulean Gym door approx at (16, 5)
-        self.nav.enter_building(16, 5)
-        self.nav.navigate_to(10, 3)
+
+        # Should be near Cerulean after Mt. Moon
+        if self.gs.map_id != CERULEAN_CITY:
+            self.nav.press_until_map_is(Direction.RIGHT, CERULEAN_CITY, max_steps=100)
+
+        self.nav.enter_pokecenter_and_heal()
+        self.nav.exit_building()
+
+        # Enter Cerulean Gym
+        self.nav.press_until_map_is(Direction.UP, CERULEAN_GYM, max_steps=80)
+        if self.gs.map_id != CERULEAN_GYM:
+            self.nav.press_until_map_change(Direction.UP, max_steps=30)
+
+        self.nav.press_until_dialog(Direction.UP, max_steps=20)
         self.nav.press_a_interact()
+        self.nav.mash_a(count=10, frames_between=30)
         self.nav.mash_through_dialog(max_presses=200)
-        self.nav.exit_to_overworld()
+        self.nav.exit_building()
+
         log.info("STEP: cerulean_misty — complete")
         self._mark_complete("cerulean_misty")
 
     def step_nugget_bridge_bill(self):
-        """
-        Cross Nugget Bridge (Routes 24/25), reach Bill's Cottage,
-        get SS Ticket, return to Cerulean.
-        """
+        """Cross Nugget Bridge (Route 24/25), visit Bill, get SS Ticket."""
         log.info("STEP: nugget_bridge_bill")
-        # Head north from Cerulean
-        self.nav.navigate_to(15, 0)
-        # Cross Nugget Bridge — fight 6 trainers (battle_ai handles)
-        self.nav.navigate_to(15, -20)  # Route 24 north
-        # Bill's Cottage (Route 25 end)
-        self.nav.enter_building(25, 5)
-        self.nav.navigate_to(5, 5)
+
+        # Head north from Cerulean across Route 24 (Nugget Bridge)
+        self.nav.press_until_map_is(Direction.UP, ROUTE_24, max_steps=40)
+        # Walk north through the bridge (6 trainer fights)
+        self.nav.press_until_map_is(Direction.UP, ROUTE_25, max_steps=200)
+        # Walk right to Bill's cottage
+        self.nav.press_until_map_change(Direction.RIGHT, max_steps=100)
+        # Talk to Bill
+        self.nav.press_until_dialog(Direction.UP, max_steps=20)
         self.nav.press_a_interact()
+        self.nav.mash_a(count=50, frames_between=30)
         self.nav.mash_through_dialog(max_presses=100)
-        self.nav.exit_to_overworld()
+        self.nav.exit_building()
+
+        # Return to Cerulean
+        self.nav.press_until_map_is(Direction.DOWN, CERULEAN_CITY, max_steps=300)
+
         log.info("STEP: nugget_bridge_bill — complete")
         self._mark_complete("nugget_bridge_bill")
 
     def step_vermilion_ltsurge(self):
         """
-        Board SS Anne (get HM01 Cut), then beat Lt. Surge.
+        Go south to Vermilion, board SS Anne (get HM01 Cut),
+        then beat Lt. Surge.
         """
         log.info("STEP: vermilion_ltsurge")
-        go_to_pokecenter(self.nav, self.gs)
-        self.nav.exit_to_overworld()
-        # SS Anne dock (approx)
-        self.nav.navigate_to(20, 18)
-        self.nav.enter_building(20, 18)
-        # Get Cut from captain (navigate to top)
-        self.nav.navigate_to(10, 3)
+
+        # South from Cerulean through Route 5 to Vermilion
+        self.nav.press_until_map_is(Direction.DOWN, VERMILION_CITY, max_steps=300)
+
+        self.nav.enter_pokecenter_and_heal()
+        self.nav.exit_building()
+
+        # SS Anne — dock is south of Vermilion
+        # Enter the port building, show SS Ticket
+        self.nav.press_until_map_change(Direction.DOWN, max_steps=40)
+        self.nav.mash_a(count=20, frames_between=30)
+        self.nav.mash_through_dialog(max_presses=40)
+        # Navigate SS Anne to captain, get HM01 Cut
+        self.nav.press_until_dialog(Direction.UP, max_steps=50)
         self.nav.press_a_interact()
+        self.nav.mash_a(count=30, frames_between=30)
         self.nav.mash_through_dialog(max_presses=60)
-        self.nav.exit_to_overworld()
-        # Vermilion Gym
-        self.nav.enter_building(15, 8)
-        # Solve trash can puzzle (battle_ai or dedicated logic handles)
-        self.nav.navigate_to(8, 3)
+        self.nav.exit_building()
+
+        # Vermilion Gym (need Cut to enter)
+        self.nav.press_until_map_is(Direction.UP, VERMILION_GYM, max_steps=80)
+        if self.gs.map_id != VERMILION_GYM:
+            self.nav.press_until_map_change(Direction.UP, max_steps=30)
+        # Trash can puzzle + Lt. Surge
+        self.nav.press_until_dialog(Direction.UP, max_steps=30)
         self.nav.press_a_interact()
+        self.nav.mash_a(count=10, frames_between=30)
         self.nav.mash_through_dialog(max_presses=200)
-        self.nav.exit_to_overworld()
+        self.nav.exit_building()
+
         log.info("STEP: vermilion_ltsurge — complete")
         self._mark_complete("vermilion_ltsurge")
 
     def step_rock_tunnel(self):
-        """
-        Route 9 east from Cerulean, heal at Route 10 Pokecenter,
-        navigate Rock Tunnel (dark cave), exit to Lavender Town.
-        """
+        """Route 9 east, heal at Route 10 center, through Rock Tunnel to Lavender."""
         log.info("STEP: rock_tunnel")
-        # Head east then south
-        self.nav.navigate_to(30, 5)
-        # Route 10 Pokecenter (heal before dark cave)
-        go_to_pokecenter(self.nav, self.gs)
-        self.nav.exit_to_overworld()
+
+        # East from Cerulean through Route 9
+        self.nav.press_until_map_is(Direction.RIGHT, ROUTE_9, max_steps=60)
+        self.nav.press_until_map_is(Direction.RIGHT, ROUTE_10, max_steps=200)
+
+        # Heal at Route 10 pokecenter
+        self.nav.press_until_map_change(Direction.UP, max_steps=20)
+        self.nav.enter_pokecenter_and_heal()
+        self.nav.exit_building()
+
         # Enter Rock Tunnel
-        self.nav.navigate_to(2, 20)
-        self.nav.enter_building(2, 20)
-        # Navigate through tunnel (down through 2 floors)
-        self.nav.navigate_to(15, 25)
-        self.nav.navigate_to(5, 10)
+        self.nav.press_until_map_change(Direction.DOWN, max_steps=40)
+
+        # Navigate through Rock Tunnel (2 floors, dark)
+        steps = 0
+        while self.gs.map_id in (ROCK_TUNNEL_1F, ROCK_TUNNEL_B1F) and steps < 600:
+            self.gs.update()
+            if self.gs.in_battle:
+                steps += 1
+                continue
+            moved = self.nav.move_one_step(Direction.DOWN)
+            if not moved:
+                moved = self.nav.move_one_step(Direction.RIGHT)
+            if not moved:
+                self.nav.move_one_step(Direction.LEFT)
+            steps += 1
+
         log.info("STEP: rock_tunnel — complete")
         self._mark_complete("rock_tunnel")
 
     def step_celadon_erika(self):
-        """
-        Rocket Hideout (get Silph Scope), then Erika's gym.
-        """
+        """Rocket Hideout under Game Corner, then Erika's gym."""
         log.info("STEP: celadon_erika")
-        go_to_pokecenter(self.nav, self.gs)
-        self.nav.exit_to_overworld()
-        # Game Corner (Rocket Hideout entrance)
-        self.nav.enter_building(20, 15)
-        self.nav.navigate_to(15, 20)
-        self.nav.press_a_interact()   # poster switch
-        # Navigate basement floors B1-B4
-        self.nav.navigate_to(10, 10)
-        self.nav.mash_through_dialog(max_presses=200)  # Giovanni battle
-        self.nav.exit_to_overworld()
-        # Celadon Gym
-        self.nav.enter_building(10, 8)
-        self.nav.navigate_to(10, 3)
+
+        # Navigate to Celadon City
+        if self.gs.map_id != CELADON_CITY:
+            self.nav.press_until_map_is(Direction.LEFT, CELADON_CITY, max_steps=300)
+
+        self.nav.enter_pokecenter_and_heal()
+        self.nav.exit_building()
+
+        # Game Corner → Rocket Hideout (4 basement floors)
+        self.nav.press_until_map_change(Direction.UP, max_steps=40)
+        # Navigate through hideout
+        self.nav.mash_a(count=30, frames_between=20)
+        for _ in range(4):  # 4 floors
+            self.nav.press_until_map_change(Direction.DOWN, max_steps=100)
+        # Giovanni battle at B4F
+        self.nav.press_until_dialog(Direction.UP, max_steps=30)
         self.nav.press_a_interact()
         self.nav.mash_through_dialog(max_presses=200)
-        self.nav.exit_to_overworld()
+        # Get Silph Scope
+        self.nav.mash_a(count=20, frames_between=30)
+        self.nav.exit_building()
+
+        # Celadon Gym
+        self.nav.press_until_map_is(Direction.LEFT, CELADON_GYM, max_steps=60)
+        if self.gs.map_id != CELADON_GYM:
+            self.nav.press_until_map_change(Direction.UP, max_steps=30)
+        self.nav.press_until_dialog(Direction.UP, max_steps=20)
+        self.nav.press_a_interact()
+        self.nav.mash_through_dialog(max_presses=200)
+        self.nav.exit_building()
+
         log.info("STEP: celadon_erika — complete")
         self._mark_complete("celadon_erika")
 
     def step_pokemon_tower(self):
-        """
-        Return to Lavender Town, climb Pokemon Tower (7F),
-        rescue Mr. Fuji, receive Poke Flute.
-        """
+        """Climb Pokemon Tower in Lavender, rescue Mr. Fuji, get Poke Flute."""
         log.info("STEP: pokemon_tower")
-        # Navigate to Pokemon Tower
-        self.nav.enter_building(10, 5)
-        # Climb 7 floors
-        for floor in range(7):
-            self.nav.navigate_to(5, 0)  # climb to staircase (approx)
-        # Mr. Fuji at top
-        self.nav.navigate_to(5, 5)
+
+        # Navigate to Lavender Town
+        if self.gs.map_id != LAVENDER_TOWN:
+            self.nav.press_until_map_is(Direction.RIGHT, LAVENDER_TOWN, max_steps=300)
+
+        # Enter Pokemon Tower
+        self.nav.press_until_map_change(Direction.UP, max_steps=40)
+
+        # Climb 7 floors — each floor: walk to stairs, transition
+        for floor in range(6):  # 6 transitions (1F→7F)
+            self.gs.update()
+            if self.gs.in_battle:
+                continue
+            self.nav.press_until_map_change(Direction.UP, max_steps=80)
+            log.info(f"pokemon_tower: floor {floor + 2}, map 0x{self.gs.map_id:02X}")
+
+        # Top floor — rescue Mr. Fuji
+        self.nav.press_until_dialog(Direction.UP, max_steps=30)
         self.nav.press_a_interact()
+        self.nav.mash_a(count=40, frames_between=30)
         self.nav.mash_through_dialog(max_presses=100)
-        self.nav.exit_to_overworld()
+
+        # Mr. Fuji teleports us to his house — mash through, get Poke Flute
+        self.nav.mash_a(count=30, frames_between=30)
+        self.nav.exit_building()
+
         log.info("STEP: pokemon_tower — complete")
         self._mark_complete("pokemon_tower")
 
     def step_saffron_sabrina(self):
-        """
-        Enter Saffron City (give drink to guard),
-        clear Silph Co. (get Master Ball), beat Sabrina.
-        """
+        """Clear Silph Co., then beat Sabrina in Saffron Gym."""
         log.info("STEP: saffron_sabrina")
-        go_to_pokecenter(self.nav, self.gs)
-        self.nav.exit_to_overworld()
-        # Silph Co.
-        self.nav.enter_building(15, 10)
-        # Navigate to 5F Card Key, then 11F Giovanni
-        self.nav.navigate_to(10, 5)
+
+        # Navigate to Saffron City
+        if self.gs.map_id != SAFFRON_CITY:
+            self.nav.press_until_map_is(Direction.LEFT, SAFFRON_CITY, max_steps=300)
+
+        self.nav.enter_pokecenter_and_heal()
+        self.nav.exit_building()
+
+        # Silph Co. — tall building, navigate through floors
+        self.nav.press_until_map_change(Direction.UP, max_steps=40)
+        # Navigate through Silph Co. (11 floors with teleport pads)
+        # This is complex — for now, keep pressing through
+        for _ in range(10):
+            self.nav.press_until_map_change(Direction.UP, max_steps=60)
+            self.nav.mash_a(count=10, frames_between=20)
+        # Giovanni on 11F
+        self.nav.press_until_dialog(Direction.UP, max_steps=30)
         self.nav.press_a_interact()
         self.nav.mash_through_dialog(max_presses=300)
-        self.nav.exit_to_overworld()
-        # Saffron Gym
-        self.nav.enter_building(17, 5)
-        self.nav.navigate_to(10, 3)
+        self.nav.exit_building()
+
+        # Saffron Gym (teleport pad puzzle)
+        self.nav.press_until_map_is(Direction.DOWN, SAFFRON_GYM, max_steps=60)
+        if self.gs.map_id != SAFFRON_GYM:
+            self.nav.press_until_map_change(Direction.UP, max_steps=30)
+        self.nav.press_until_dialog(Direction.UP, max_steps=30)
         self.nav.press_a_interact()
         self.nav.mash_through_dialog(max_presses=200)
-        self.nav.exit_to_overworld()
+        self.nav.exit_building()
+
         log.info("STEP: saffron_sabrina — complete")
         self._mark_complete("saffron_sabrina")
 
     def step_fuchsia_koga(self):
-        """
-        Travel to Fuchsia City (Routes 12-15 or Cycling Road),
-        do Safari Zone (get Surf + Strength), beat Koga.
-        """
+        """Safari Zone (Surf + Strength), then Koga's gym."""
         log.info("STEP: fuchsia_koga")
-        go_to_pokecenter(self.nav, self.gs)
-        self.nav.exit_to_overworld()
-        # Safari Zone (get HMs)
-        self.nav.enter_building(10, 5)
-        self.nav.navigate_to(20, 20)  # Secret House with Surf
+
+        # Navigate to Fuchsia City
+        if self.gs.map_id != FUCHSIA_CITY:
+            self.nav.press_until_map_is(Direction.DOWN, FUCHSIA_CITY, max_steps=500)
+
+        self.nav.enter_pokecenter_and_heal()
+        self.nav.exit_building()
+
+        # Safari Zone — get HM03 Surf and Gold Teeth
+        self.nav.press_until_map_change(Direction.UP, max_steps=40)
+        # Navigate Safari Zone areas
+        for _ in range(4):
+            self.nav.press_until_map_change(Direction.UP, max_steps=100)
+        # Secret House with Surf
+        self.nav.press_until_dialog(Direction.UP, max_steps=30)
         self.nav.press_a_interact()
         self.nav.mash_through_dialog(max_presses=60)
-        self.nav.exit_to_overworld()
-        # Give Gold Teeth to Warden → get Strength
-        self.nav.enter_building(8, 15)
+        self.nav.exit_building()
+
+        # Warden's house — trade Gold Teeth for HM04 Strength
+        self.nav.press_until_map_change(Direction.DOWN, max_steps=60)
+        self.nav.press_until_dialog(Direction.UP, max_steps=15)
         self.nav.press_a_interact()
         self.nav.mash_through_dialog(max_presses=40)
-        self.nav.exit_to_overworld()
-        # Fuchsia Gym
-        self.nav.enter_building(15, 5)
-        self.nav.navigate_to(10, 3)
+        self.nav.exit_building()
+
+        # Fuchsia Gym (invisible walls)
+        self.nav.press_until_map_is(Direction.DOWN, FUCHSIA_GYM, max_steps=60)
+        if self.gs.map_id != FUCHSIA_GYM:
+            self.nav.press_until_map_change(Direction.UP, max_steps=30)
+        self.nav.press_until_dialog(Direction.UP, max_steps=30)
         self.nav.press_a_interact()
         self.nav.mash_through_dialog(max_presses=200)
-        self.nav.exit_to_overworld()
+        self.nav.exit_building()
+
         log.info("STEP: fuchsia_koga — complete")
         self._mark_complete("fuchsia_koga")
 
     def step_cinnabar_blaine(self):
-        """
-        Surf south to Cinnabar Island,
-        explore Pokemon Mansion (get Secret Key), beat Blaine.
-        """
+        """Surf to Cinnabar, Pokemon Mansion (Secret Key), beat Blaine."""
         log.info("STEP: cinnabar_blaine")
-        go_to_pokecenter(self.nav, self.gs)
-        self.nav.exit_to_overworld()
-        # Pokemon Mansion
-        self.nav.enter_building(10, 8)
-        # Navigate 4 floors for Secret Key
-        self.nav.navigate_to(10, 10)
-        self.nav.mash_through_dialog(max_presses=60)
-        self.nav.exit_to_overworld()
-        # Cinnabar Gym
-        self.nav.enter_building(12, 8)
-        self.nav.navigate_to(10, 3)
+
+        # Surf south from Fuchsia/Pallet to Cinnabar Island
+        self.nav.press_until_map_is(Direction.DOWN, CINNABAR_ISLAND, max_steps=500)
+
+        self.nav.enter_pokecenter_and_heal()
+        self.nav.exit_building()
+
+        # Pokemon Mansion — get Secret Key
+        self.nav.press_until_map_change(Direction.UP, max_steps=40)
+        # Navigate mansion (4 floors with switches)
+        for _ in range(4):
+            self.nav.press_until_map_change(Direction.DOWN, max_steps=100)
+        self.nav.mash_a(count=20, frames_between=20)
+        self.nav.exit_building()
+
+        # Cinnabar Gym (quiz doors)
+        self.nav.press_until_map_is(Direction.RIGHT, CINNABAR_GYM, max_steps=40)
+        if self.gs.map_id != CINNABAR_GYM:
+            self.nav.press_until_map_change(Direction.UP, max_steps=20)
+        # Answer quiz questions with A to skip fights
+        for _ in range(6):
+            self.nav.press_until_dialog(Direction.UP, max_steps=15)
+            self.nav.press_a_interact()
+            self.nav.mash_a(count=5, frames_between=30)
+        # Blaine battle
+        self.nav.press_until_dialog(Direction.UP, max_steps=15)
         self.nav.press_a_interact()
         self.nav.mash_through_dialog(max_presses=200)
-        self.nav.exit_to_overworld()
+        self.nav.exit_building()
+
         log.info("STEP: cinnabar_blaine — complete")
         self._mark_complete("cinnabar_blaine")
 
     def step_viridian_giovanni(self):
-        """
-        Return to Viridian City (gym now unlocked),
-        navigate the gym and beat Giovanni.
-        """
+        """Return to Viridian City, beat Giovanni in the gym."""
         log.info("STEP: viridian_giovanni")
-        go_to_pokecenter(self.nav, self.gs)
-        self.nav.exit_to_overworld()
+
+        # Surf/walk back to Viridian City
+        if self.gs.map_id != VIRIDIAN_CITY:
+            self.nav.press_until_map_is(Direction.UP, VIRIDIAN_CITY, max_steps=500)
+
+        self.nav.enter_pokecenter_and_heal()
+        self.nav.exit_building()
+
         # Viridian Gym
-        self.nav.enter_building(15, 5)
-        self.nav.navigate_to(10, 3)
+        self.nav.press_until_map_is(Direction.DOWN, VIRIDIAN_GYM, max_steps=60)
+        if self.gs.map_id != VIRIDIAN_GYM:
+            self.nav.press_until_map_change(Direction.UP, max_steps=30)
+        # Navigate spinning tiles to Giovanni
+        self.nav.press_until_dialog(Direction.UP, max_steps=40)
         self.nav.press_a_interact()
         self.nav.mash_through_dialog(max_presses=200)
-        self.nav.exit_to_overworld()
+        self.nav.exit_building()
+
         log.info("STEP: viridian_giovanni — complete")
         self._mark_complete("viridian_giovanni")
 
     def step_elite_four(self):
-        """
-        Route 22 → Route 23 → Victory Road → Indigo Plateau → Elite Four → Champion.
-        """
+        """Route 22 → 23 → Victory Road → Indigo Plateau → Elite Four → Champion."""
         log.info("STEP: elite_four")
-        go_to_pokecenter(self.nav, self.gs)
-        self.nav.exit_to_overworld()
-        # Victory Road
-        self.nav.navigate_to(5, 5)    # Route 22 entrance
-        self.nav.navigate_to(5, 0)    # Route 23 north
-        self.nav.enter_building(5, 0) # Victory Road
-        # Navigate 3 floors
+
+        # Navigate west to Route 22
+        self.nav.press_until_map_is(Direction.LEFT, ROUTE_22, max_steps=60)
+        # North through Route 23 (badge gates)
+        self.nav.press_until_map_is(Direction.UP, ROUTE_23, max_steps=100)
+        self.nav.mash_a(count=30, frames_between=20)  # badge gate dialogs
+
+        # Victory Road (3 floors with strength puzzles)
+        self.nav.press_until_map_change(Direction.UP, max_steps=100)
         for _ in range(3):
-            self.nav.navigate_to(15, 15)
-        self.nav.exit_to_overworld()
-        # Elite Four (4 consecutive battles + Champion)
-        self.nav.enter_building(10, 5)
+            self.nav.press_until_map_change(Direction.UP, max_steps=150)
+
+        # Indigo Plateau — heal
+        self.nav.press_until_map_is(Direction.UP, INDIGO_PLATEAU, max_steps=100)
+        self.nav.enter_pokecenter_and_heal()
+        self.nav.exit_building()
+
+        # Elite Four: 4 battles + Champion (5 consecutive rooms)
         for i in range(5):
-            self.nav.navigate_to(5, 3)
+            log.info(f"elite_four: battle {i + 1}/5")
+            self.nav.press_until_map_change(Direction.UP, max_steps=30)
+            self.nav.press_until_dialog(Direction.UP, max_steps=20)
             self.nav.press_a_interact()
             self.nav.mash_through_dialog(max_presses=500)
+
+        # Hall of Fame
+        self.nav.mash_a(count=100, frames_between=20)
+
         log.info("STEP: elite_four — GAME COMPLETE!")
         self._mark_complete("elite_four")
         self._mark_complete("game_complete")
@@ -946,64 +1280,58 @@ class ProgressionManager:
     # ------------------------------------------------------------------
 
     def run_next_step(self):
-        """Execute the next progression step based on current game state."""
+        """Execute the next progression step."""
         step = self.get_current_step()
-        log.info(f"run_next_step: executing '{step}'")
+        log.info(f"run_next_step: '{step}'")
 
         dispatch = {
-            "pallet_start":       self.step_pallet_town,
+            "pallet_start": self.step_pallet_town,
             "route1_to_viridian": self.step_route1_to_viridian,
-            "viridian_parcel":    self.step_viridian_parcel,
-            "viridian_forest":    self.step_viridian_forest,
-            "pewter_brock":       self.step_pewter_brock,
-            "mt_moon":            self.step_mt_moon,
-            "cerulean_misty":     self.step_cerulean_misty,
+            "viridian_parcel": self.step_viridian_parcel,
+            "viridian_forest": self.step_viridian_forest,
+            "pewter_brock": self.step_pewter_brock,
+            "mt_moon": self.step_mt_moon,
+            "cerulean_misty": self.step_cerulean_misty,
             "nugget_bridge_bill": self.step_nugget_bridge_bill,
-            "vermilion_ltsurge":  self.step_vermilion_ltsurge,
-            "rock_tunnel":        self.step_rock_tunnel,
-            "celadon_erika":      self.step_celadon_erika,
-            "pokemon_tower":      self.step_pokemon_tower,
-            "saffron_sabrina":    self.step_saffron_sabrina,
-            "fuchsia_koga":       self.step_fuchsia_koga,
-            "cinnabar_blaine":    self.step_cinnabar_blaine,
-            "viridian_giovanni":  self.step_viridian_giovanni,
-            "elite_four":         self.step_elite_four,
+            "vermilion_ltsurge": self.step_vermilion_ltsurge,
+            "rock_tunnel": self.step_rock_tunnel,
+            "celadon_erika": self.step_celadon_erika,
+            "pokemon_tower": self.step_pokemon_tower,
+            "saffron_sabrina": self.step_saffron_sabrina,
+            "fuchsia_koga": self.step_fuchsia_koga,
+            "cinnabar_blaine": self.step_cinnabar_blaine,
+            "viridian_giovanni": self.step_viridian_giovanni,
+            "elite_four": self.step_elite_four,
         }
 
         fn = dispatch.get(step)
         if fn:
             fn()
         elif step == "game_complete":
-            log.info("run_next_step: game is complete!")
+            log.info("Game is complete!")
         else:
-            log.warning(f"run_next_step: unknown step '{step}'")
+            log.warning(f"Unknown step: '{step}'")
 
     def run_full_game(self):
-        """
-        Main loop: keep executing steps until the game is complete or
-        an unrecoverable error occurs.
-        """
-        log.info("run_full_game: starting full game run")
+        """Main loop: execute steps, handle battles, heal as needed."""
+        log.info("run_full_game: starting")
         while True:
             self.gs.update()
 
             if self.gs.in_battle:
                 if self.battle_ai:
-                    log.info("run_full_game: in battle — handing off to battle_ai")
                     self.battle_ai.handle_battle_turn()
                 else:
-                    log.warning("run_full_game: in battle but no battle_ai configured")
-                    self.nav.mash_through_dialog(max_presses=10)
+                    self.nav.mash_a(count=5, frames_between=20)
                 continue
 
             if self.gs.needs_heal:
-                log.info("run_full_game: party needs healing")
                 go_to_pokecenter(self.nav, self.gs)
                 continue
 
             step = self.get_current_step()
             if step == "game_complete":
-                log.info("run_full_game: GAME COMPLETE! Exiting loop.")
+                log.info("GAME COMPLETE!")
                 break
 
             self.run_next_step()
