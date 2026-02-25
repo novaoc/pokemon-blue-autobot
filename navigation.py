@@ -213,6 +213,17 @@ CITY_TO_POKECENTER = {
     INDIGO_PLATEAU: INDIGO_POKECENTER,
 }
 
+# Overworld maps — towns, cities, and routes (outdoor maps where exit_building
+# should be a no-op because the player is already outside).
+OVERWORLD_MAPS = {
+    PALLET_TOWN, VIRIDIAN_CITY, PEWTER_CITY, CERULEAN_CITY, LAVENDER_TOWN,
+    VERMILION_CITY, CELADON_CITY, FUCHSIA_CITY, CINNABAR_ISLAND, SAFFRON_CITY,
+    INDIGO_PLATEAU,
+    ROUTE_1, ROUTE_2, ROUTE_3, ROUTE_4, ROUTE_5, ROUTE_6, ROUTE_7, ROUTE_8,
+    ROUTE_9, ROUTE_10, ROUTE_11, ROUTE_12, ROUTE_13, ROUTE_14, ROUTE_15,
+    ROUTE_16, ROUTE_17, ROUTE_18, ROUTE_22, ROUTE_23, ROUTE_24, ROUTE_25,
+}
+
 # Routes that are adjacent to cities (for pokecenter routing)
 ROUTE_TO_NEAREST_CITY = {
     ROUTE_1: VIRIDIAN_CITY,
@@ -511,8 +522,12 @@ class Navigator:
 
     def exit_building(self) -> bool:
         """Generic building exit: walk DOWN to bottom wall, then sweep for exit door."""
-        log.info("exit_building from map 0x%02X", self.gs.map_id)
-        start_map = self.gs.map_id
+        current_map = self.gs.map_id
+        if current_map in OVERWORLD_MAPS:
+            log.info("exit_building: already on overworld map 0x%02X — skipping", current_map)
+            return True
+        log.info("exit_building from map 0x%02X", current_map)
+        start_map = current_map
 
         # Phase 1: Walk DOWN to reach the bottom wall
         for _ in range(15):
@@ -745,32 +760,11 @@ class ProgressionManager:
     # ------------------------------------------------------------------
 
     def get_current_step(self) -> str:
-        try:
-            badges = self.gs.badges
-        except Exception:
-            return self.state.get("step", "pallet_start")
-
-        badge_count = bin(badges).count("1")
         saved = self.state.get("step", "pallet_start")
-
-        # Map badge count ranges to possible steps
-        step_ranges = {
-            0: ["pallet_start", "route1_to_viridian", "viridian_parcel",
-                "viridian_forest", "pewter_brock"],
-            1: ["mt_moon", "cerulean_misty"],
-            2: ["nugget_bridge_bill", "vermilion_ltsurge"],
-            3: ["rock_tunnel", "celadon_erika"],
-            4: ["pokemon_tower", "saffron_sabrina", "celadon_erika"],
-            5: ["fuchsia_koga", "saffron_sabrina"],
-            6: ["cinnabar_blaine", "fuchsia_koga"],
-            7: ["viridian_giovanni"],
-            8: ["elite_four"],
-        }
-
-        valid_steps = step_ranges.get(badge_count, [])
-        if saved in valid_steps:
+        if saved in self.STEP_ORDER:
             return saved
-        return valid_steps[0] if valid_steps else "game_complete"
+        log.warning("get_current_step: unknown step '%s' — resetting to pallet_start", saved)
+        return "pallet_start"
 
     def sync_with_badges(self, badges: int) -> None:
         """
@@ -966,8 +960,15 @@ class ProgressionManager:
                 # Might be in a gate building — walk through
                 self.nav.press_until_map_change(Direction.UP, max_steps=20)
 
-        log.info("STEP: viridian_forest — complete")
-        self._mark_complete("viridian_forest")
+        if self.gs.map_id == PEWTER_CITY:
+            log.info("STEP: viridian_forest — complete (reached Pewter City)")
+            self._mark_complete("viridian_forest")
+        else:
+            log.warning(
+                "STEP: viridian_forest — loop ended but player on map 0x%02X, "
+                "not PEWTER_CITY (0x%02X); NOT marking complete",
+                self.gs.map_id, PEWTER_CITY,
+            )
 
     def step_pewter_brock(self):
         """Heal at Pewter Pokecenter, then challenge Brock's gym."""
@@ -993,8 +994,15 @@ class ProgressionManager:
         self.nav.mash_through_dialog(max_presses=200)
         self.nav.exit_building()
 
-        log.info("STEP: pewter_brock — complete")
-        self._mark_complete("pewter_brock")
+        if self.gs.map_id == PEWTER_CITY:
+            log.info("STEP: pewter_brock — complete (back in Pewter City)")
+            self._mark_complete("pewter_brock")
+        else:
+            log.warning(
+                "STEP: pewter_brock — ended but player on map 0x%02X, "
+                "not PEWTER_CITY (0x%02X); NOT marking complete",
+                self.gs.map_id, PEWTER_CITY,
+            )
 
     def step_mt_moon(self):
         """Route 3 east to Mt. Moon, navigate through to Route 4 / Cerulean."""
