@@ -56,7 +56,7 @@ PARTY_SLOT_STRIDE   = 0x2C
 # ---------------------------------------------------------------------------
 BATTLE_CURSOR  = 0xCC26   # Battle menu cursor position
 CURRENT_MENU   = 0xCC24   # Current menu type
-DIALOG_BOX     = 0xC4F1   # Dialog open flag
+DIALOG_BOX     = 0xCFC6   # wFontLoaded: 1 when text box active, 0 otherwise
 TEXT_ID        = 0xCFC4   # Current text message ID
 OVERWORLD_TEXT = 0xC3A0   # Text display flag
 

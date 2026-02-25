@@ -4,6 +4,7 @@ Uses PyBoy 2.x for button input and direct memory reads.
 
 Depends on: emulator.py (GameState stub), memory.py (memory address constants)
 """
+from __future__ import annotations
 
 # ---------------------------------------------------------------------------
 # Gen 1 Type constants (15 types — no Dark/Steel/Fairy in Gen 1)
