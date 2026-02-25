@@ -86,6 +86,16 @@ SILPH_CO_1F = 0x6E
 POKEMON_MANSION_1F = 0x8B
 VICTORY_ROAD_1F = 0x9C
 
+# Overworld maps (towns, cities, routes) — used to detect "already outside"
+OVERWORLD_MAPS = {
+    PALLET_TOWN, VIRIDIAN_CITY, PEWTER_CITY, CERULEAN_CITY, LAVENDER_TOWN,
+    VERMILION_CITY, CELADON_CITY, FUCHSIA_CITY, CINNABAR_ISLAND, SAFFRON_CITY,
+    INDIGO_PLATEAU,
+    ROUTE_1, ROUTE_2, ROUTE_3, ROUTE_4, ROUTE_5, ROUTE_6, ROUTE_7, ROUTE_8,
+    ROUTE_9, ROUTE_10, ROUTE_11, ROUTE_12, ROUTE_13, ROUTE_14, ROUTE_15,
+    ROUTE_16, ROUTE_17, ROUTE_18, ROUTE_22, ROUTE_23, ROUTE_24, ROUTE_25,
+}
+
 # Gyms
 VIRIDIAN_GYM = 0xC2
 PEWTER_GYM = 0xC3
@@ -514,6 +524,11 @@ class Navigator:
         log.info("exit_building from map 0x%02X", self.gs.map_id)
         start_map = self.gs.map_id
 
+        # Guard: if already on an overworld map, nothing to exit
+        if start_map in OVERWORLD_MAPS:
+            log.info("exit_building: already on overworld map 0x%02X — skipping", start_map)
+            return True
+
         # Phase 1: Walk DOWN to reach the bottom wall
         for _ in range(15):
             old_y = self.gs.player_y
@@ -745,32 +760,11 @@ class ProgressionManager:
     # ------------------------------------------------------------------
 
     def get_current_step(self) -> str:
-        try:
-            badges = self.gs.badges
-        except Exception:
-            return self.state.get("step", "pallet_start")
-
-        badge_count = bin(badges).count("1")
         saved = self.state.get("step", "pallet_start")
-
-        # Map badge count ranges to possible steps
-        step_ranges = {
-            0: ["pallet_start", "route1_to_viridian", "viridian_parcel",
-                "viridian_forest", "pewter_brock"],
-            1: ["mt_moon", "cerulean_misty"],
-            2: ["nugget_bridge_bill", "vermilion_ltsurge"],
-            3: ["rock_tunnel", "celadon_erika"],
-            4: ["pokemon_tower", "saffron_sabrina", "celadon_erika"],
-            5: ["fuchsia_koga", "saffron_sabrina"],
-            6: ["cinnabar_blaine", "fuchsia_koga"],
-            7: ["viridian_giovanni"],
-            8: ["elite_four"],
-        }
-
-        valid_steps = step_ranges.get(badge_count, [])
-        if saved in valid_steps:
+        if saved in self.STEP_ORDER:
             return saved
-        return valid_steps[0] if valid_steps else "game_complete"
+        log.warning("get_current_step: unknown saved step '%s' — defaulting to pallet_start", saved)
+        return "pallet_start"
 
     def sync_with_badges(self, badges: int) -> None:
         """
@@ -966,6 +960,9 @@ class ProgressionManager:
                 # Might be in a gate building — walk through
                 self.nav.press_until_map_change(Direction.UP, max_steps=20)
 
+        if self.gs.map_id != PEWTER_CITY:
+            log.warning("STEP: viridian_forest — loop ended without reaching Pewter City (map 0x%02X); will retry", self.gs.map_id)
+            return
         log.info("STEP: viridian_forest — complete")
         self._mark_complete("viridian_forest")
 
@@ -993,6 +990,9 @@ class ProgressionManager:
         self.nav.mash_through_dialog(max_presses=200)
         self.nav.exit_building()
 
+        if self.gs.map_id != PEWTER_CITY:
+            log.warning("STEP: pewter_brock — not in Pewter City after gym (map 0x%02X); will retry", self.gs.map_id)
+            return
         log.info("STEP: pewter_brock — complete")
         self._mark_complete("pewter_brock")
 
