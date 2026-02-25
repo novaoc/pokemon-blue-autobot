@@ -10,6 +10,10 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from emulator import PokemonEmulator
 
+# MAP_NAMES is the canonical map-ID → name lookup.
+# navigation.py is the single source of truth (verified pret/pokered constants).
+from navigation import MAP_IDS as MAP_NAMES  # noqa: E402
+
 # ---------------------------------------------------------------------------
 # Player / Map
 # ---------------------------------------------------------------------------
@@ -67,32 +71,6 @@ HM_MOVES       = 0xD730   # HM flags learned
 # ---------------------------------------------------------------------------
 ITEM_COUNT     = 0xD31D   # Number of items in bag
 MONEY          = 0xD347   # Money (3 bytes BCD)
-
-# ---------------------------------------------------------------------------
-# Map name lookup
-# ---------------------------------------------------------------------------
-MAP_NAMES: dict[int, str] = {
-    0x00: "PALLET_TOWN",
-    0x01: "VIRIDIAN_CITY",
-    0x02: "PEWTER_CITY",
-    0x03: "CERULEAN_CITY",
-    0x04: "VERMILION_CITY",        # (various sources differ; adjust as needed)
-    0x05: "CERULEAN_CAVE",
-    0x06: "ROCK_TUNNEL",
-    0x0C: "VERMILION_CITY",
-    0x0D: "LAVENDER_TOWN",
-    0x0E: "FUCHSIA_CITY",
-    0x11: "CELADON_CITY",
-    0x12: "FUCHSIA_CITY",
-    0x13: "CINNABAR_ISLAND",
-    0x14: "INDIGO_PLATEAU",
-    0x15: "SAFFRON_CITY",
-    0x28: "VIRIDIAN_FOREST",
-    0x33: "MT_MOON",
-    0x59: "SAFARI_ZONE",
-    0xED: "UNDERGROUND_PATH",
-    0xFF: "UNKNOWN",
-}
 
 
 # ---------------------------------------------------------------------------

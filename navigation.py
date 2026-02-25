@@ -503,12 +503,24 @@ class Navigator:
         """
         Assuming we're standing near a Pokecenter door on the overworld:
         walk UP to enter, then UP to the counter, interact, mash dialog.
-        
+
         Pokecenter interiors all have the same layout:
         - Door is at bottom center
         - Nurse Joy counter is near the top center
         - Walk UP until dialog triggers = you're at the counter
         """
+        # BUG-05 guard: only attempt entry when on a city map that has a pokecenter.
+        # Calling this from interiors (e.g. 0x26 REDS_HOUSE_2F) would walk into the
+        # wrong building or spin forever.
+        current_map = self.gs.map_id
+        if current_map not in CITY_TO_POKECENTER:
+            log.warning(
+                "enter_pokecenter_and_heal: wrong map 0x%02X (%s) — "
+                "must be on a city map with a pokecenter; skipping",
+                current_map, MAP_IDS.get(current_map, "?"),
+            )
+            return False
+
         start_map = self.gs.map_id
         # Enter the building (walk UP into door)
         self.press_until_map_change(Direction.UP, max_steps=10)
@@ -641,12 +653,23 @@ class ProgressionManager:
         "game_complete",
     ]
 
+    # Stall detector thresholds
+    _STALL_WINDOW = 3       # consecutive (step, map_id) repeats that trigger a stall event
+    _STALL_MAX_RETRIES = 5  # stall events before the step is forcibly skipped
+
     def __init__(self, emulator, game_state, navigator: Navigator, battle_ai=None):
         self.emu = emulator
         self.gs = game_state
         self.nav = navigator
         self.battle_ai = battle_ai
         self.state = self.load_state()
+
+        # BUG-03: stall detection state
+        # _stall_history: ring buffer of (step, map_id, x, y) snapshots taken at
+        #   the top of each run_next_step() call.
+        # _stall_retries: per-step count of stall events (cleared on success/skip).
+        self._stall_history: list[tuple] = []
+        self._stall_retries: dict[str, int] = {}
 
     # ------------------------------------------------------------------
     # State persistence
@@ -1340,6 +1363,45 @@ class ProgressionManager:
     def run_next_step(self):
         """Execute the next progression step."""
         step = self.get_current_step()
+
+        # ---- BUG-03: stall detector ----------------------------------------
+        # Snapshot (step, map_id, x, y) at the start of each call.
+        # If the last _STALL_WINDOW snapshots all share the same step AND the same
+        # map_id (no map progress), that's a stall event.  After _STALL_MAX_RETRIES
+        # stall events on the same step, we force-advance to the next step so the
+        # bot doesn't loop forever.
+        self.gs.update()
+        snap = (step, self.gs.map_id, self.gs.player_x, self.gs.player_y)
+        self._stall_history.append(snap)
+        if len(self._stall_history) > self._STALL_WINDOW:
+            self._stall_history.pop(0)
+
+        if len(self._stall_history) == self._STALL_WINDOW:
+            all_same = all(
+                h[0] == step and h[1] == snap[1]
+                for h in self._stall_history
+            )
+            if all_same:
+                retries = self._stall_retries.get(step, 0) + 1
+                self._stall_retries[step] = retries
+                log.warning(
+                    "STALL [retry %d/%d]: step='%s' map=0x%02X pos=(%d,%d) — "
+                    "same step+map for %d consecutive calls",
+                    retries, self._STALL_MAX_RETRIES,
+                    step, snap[1], snap[2], snap[3], self._STALL_WINDOW,
+                )
+                if retries >= self._STALL_MAX_RETRIES:
+                    log.error(
+                        "STALL SKIP: step='%s' failed after %d retries — "
+                        "marking complete and advancing to next step",
+                        step, retries,
+                    )
+                    self._stall_history.clear()
+                    self._stall_retries.pop(step, None)
+                    self._mark_complete(step)
+                    return
+        # ---- end stall detector --------------------------------------------
+
         log.info(f"run_next_step: '{step}'")
 
         dispatch = {
