@@ -6,6 +6,7 @@ navigation (press-until-condition instead of hardcoded tile coordinates).
 
 Depends on emulator.py (PokemonEmulator) and memory.py (GameState).
 """
+from __future__ import annotations
 
 import json
 import logging
@@ -476,27 +477,58 @@ class Navigator:
         """Exit from Red's House 2F → 1F → Pallet Town."""
         log.info("exit_players_house_2f")
         if self.gs.map_id == REDS_HOUSE_2F:
-            # Go down stairs to 1F
-            self.press_until_map_change(Direction.DOWN, max_steps=20)
+            # Staircase warp is at (7,1) — top-right of the room.
+            # Player starts at the bottom (Y≈7). Walk UP to Y=1, then RIGHT
+            # to step onto the warp tile.
+            self.press_until_y(Direction.UP, target_y=1, max_steps=15)
+            if not self.press_until_map_change(Direction.RIGHT, max_steps=10):
+                # Fallback: shift down one row and try RIGHT again
+                self.move_one_step(Direction.DOWN)
+                self.press_until_map_change(Direction.RIGHT, max_steps=10)
         if self.gs.map_id == REDS_HOUSE_1F:
-            # Walk out the front door
-            self.press_until_map_change(Direction.DOWN, max_steps=20)
+            # Walk out the front door (exit is at the bottom center)
+            if not self.press_until_map_change(Direction.DOWN, max_steps=20):
+                # Door might not be directly below — use sweep
+                self._sweep_for_exit()
         return self.gs.map_id == PALLET_TOWN
 
-    def exit_building(self) -> bool:
-        """Generic building exit: walk DOWN until map changes."""
-        log.info("exit_building")
+    def _sweep_for_exit(self) -> bool:
+        """Sweep LEFT then RIGHT along the bottom wall, trying DOWN at each position."""
         start_map = self.gs.map_id
-        # Try DOWN first (most buildings exit south)
-        if self.press_until_map_change(Direction.DOWN, max_steps=30):
+        for direction in (Direction.LEFT, Direction.RIGHT):
+            for _ in range(10):
+                self.move_one_step(direction)
+                self.gs.update()
+                if self.gs.map_id != start_map:
+                    return True
+                # Try stepping DOWN into the exit from this X position
+                self.move_one_step(Direction.DOWN)
+                self._tick(8)  # extra frames for warp to register
+                self.gs.update()
+                if self.gs.map_id != start_map:
+                    return True
+        return False
+
+    def exit_building(self) -> bool:
+        """Generic building exit: walk DOWN to bottom wall, then sweep for exit door."""
+        log.info("exit_building from map 0x%02X", self.gs.map_id)
+        start_map = self.gs.map_id
+
+        # Phase 1: Walk DOWN to reach the bottom wall
+        for _ in range(15):
+            old_y = self.gs.player_y
+            self.move_one_step(Direction.DOWN)
+            self.gs.update()
+            if self.gs.map_id != start_map:
+                return True  # Exited during descent
+            if self.gs.player_y == old_y:
+                break  # Hit the bottom wall
+
+        # Phase 2: Sweep LEFT and RIGHT along the bottom, trying DOWN at each X
+        if self._sweep_for_exit():
             return True
-        # If that didn't work, try walking left/right then down
-        for lateral in (Direction.LEFT, Direction.RIGHT):
-            self.move_one_step(lateral)
-            self.move_one_step(lateral)
-            if self.press_until_map_change(Direction.DOWN, max_steps=20):
-                return True
-        log.warning("exit_building: failed to exit")
+
+        log.warning("exit_building: failed to exit from map 0x%02X", start_map)
         return False
 
     def enter_pokecenter_and_heal(self) -> bool:
@@ -676,15 +708,19 @@ class ProgressionManager:
     # ------------------------------------------------------------------
 
     def load_state(self) -> dict:
+        defaults = {"step": "pallet_start", "badges": 0, "completed_steps": []}
         if os.path.exists(STATE_FILE):
             try:
                 with open(STATE_FILE, "r") as f:
                     state = json.load(f)
+                # Ensure all required keys exist (older state files may lack them)
+                for k, v in defaults.items():
+                    state.setdefault(k, v)
                 log.info(f"load_state: loaded — step={state.get('step')}")
                 return state
             except (json.JSONDecodeError, IOError) as e:
                 log.warning(f"load_state: {e}; using defaults")
-        return {"step": "pallet_start", "badges": 0, "completed_steps": []}
+        return defaults
 
     def save_state(self, state: Optional[dict] = None):
         if state is None:
