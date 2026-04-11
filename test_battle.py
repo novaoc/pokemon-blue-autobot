@@ -25,7 +25,12 @@ FAIL = "\033[31mFAIL\033[0m"
 _results = []
 
 def check(description: str, got, expected, tolerance: float = 1e-9):
-    ok = abs(got - expected) < tolerance
+    if isinstance(got, str) and isinstance(expected, str):
+        ok = got == expected
+    elif got is None or expected is None:
+        ok = got is expected
+    else:
+        ok = abs(got - expected) < tolerance
     status = PASS if ok else FAIL
     print(f"  [{status}] {description}: got={got!r}, expected={expected!r}")
     _results.append(ok)
@@ -72,6 +77,7 @@ def make_mock_state(
     enemy_species: int = 0xAF,     # Charmander (Fire)
     enemy_hp: int = 50,
     moves: list = None,            # list of (move_id, pp) tuples, length 4
+    bag_items: list = None,        # list of (item_id, quantity) tuples; None = default potions
 ):
     if moves is None:
         # Squirtle starter set: Tackle, Tail Whip, Water Gun, Withdraw
@@ -80,6 +86,13 @@ def make_mock_state(
             (0x27, 30),  # Tail Whip (Normal, 0 power)
             (0x37, 25),  # Water Gun (Water, 40 power)
             (0x6E, 40),  # Withdraw (Water, 0 power)
+        ]
+
+    if bag_items is None:
+        # Default: give the bot some potions to use
+        bag_items = [
+            (0x10, 3),  # POTION x3
+            (0x12, 1),  # HYPER POTION x1
         ]
 
     mem = {}
@@ -100,6 +113,12 @@ def make_mock_state(
     for i, (mid, pp) in enumerate(moves):
         mem[move_addrs[i]] = mid
         mem[pp_addrs[i]]   = pp
+
+    # Bag items: [count] [id, qty] [id, qty] ...
+    mem[0xD31D] = len(bag_items)
+    for i, (item_id, qty) in enumerate(bag_items):
+        mem[0xD31E + i * 2] = item_id
+        mem[0xD31E + i * 2 + 1] = qty
 
     return mem
 
@@ -313,7 +332,7 @@ def test_battle_ai_move_selection():
     # Scenario: Squirtle (Water) vs Charmander (Fire)
     # Moves: Tackle (Normal 35 pw), Tail Whip (Normal 0 pw),
     #        Water Gun (Water 40 pw), Withdraw (Water 0 pw)
-    # Water Gun vs Fire = 40 * 2.0 = 80 → best
+    # Water Gun vs Fire = 40 * 2.0 = 80, with STAB = 80 * 1.5 = 120 → best
     mem = make_mock_state(
         player_species=0xB0,  # Squirtle (Water)
         enemy_species=0xAF,   # Charmander (Fire)
@@ -338,14 +357,14 @@ def test_battle_ai_move_selection():
     check("Only Tackle has PP → slot 0", best2, 0)
 
     # Scenario: Pikachu (Electric) vs Gyarados (Water/Flying)
-    # Thunderbolt (Electric 95) vs Gyarados: Water=2.0, Flying=2.0 → eff=4.0, score=380
+    # Thunderbolt (Electric 95) vs Gyarados: Water=2.0, Flying=2.0 → eff=4.0, score=95*4.0*1.5=570
     mem3 = make_mock_state(
         player_species=0x53,   # Pikachu (Electric)
         enemy_species=0x16,    # Gyarados (Water/Flying)
         moves=[
             (0x21, 35),  # Tackle  Normal  35 pw → 35 * 1.0 = 35
-            (0x54, 30),  # Thundershock Elec 40 pw → 40 * 4.0 = 160
-            (0x55, 15),  # Thunderbolt Elec 95 pw → 95 * 4.0 = 380  (best)
+            (0x54, 30),  # Thundershock Elec 40 pw → 40 * 4.0 * 1.5 = 240
+            (0x55, 15),  # Thunderbolt Elec 95 pw → 95 * 4.0 * 1.5 = 570  (best)
             (0x00, 0),   # empty
         ],
     )
@@ -369,6 +388,23 @@ def test_battle_ai_move_selection():
     best4 = ai4.get_best_move()
     check("Earthquake 0x vs Flying → prefer Tackle (slot 1)", best4, 1)
 
+    # Scenario: STAB test — Charizard (Fire/Flying)
+    # Flamethrower (Fire 95, STAB) vs Tackle (Normal 35, no STAB)
+    # vs a Grass type: Flamethrower = 95 * 2.0 * 1.5 = 285 vs Tackle = 35
+    mem5 = make_mock_state(
+        player_species=0xB3,   # Charizard (Fire/Flying)
+        enemy_species=0x98,    # Bulbasaur (Grass/Poison)
+        moves=[
+            (0x21, 35),  # Tackle Normal 35 → 35 * 1.0 = 35
+            (0x35, 15),  # Flamethrower Fire 95 → 95 * 2.0 * 1.5 = 285 (STAB!)
+            (0x13, 15),  # Fly Flying 70 → 70 * 1.0 * 1.5 = 105 (STAB, not SE)
+            (0x00, 0),
+        ],
+    )
+    ai5 = BattleAI(MockPyBoy(mem5))
+    best5 = ai5.get_best_move()
+    check("Charizard STAB: Flamethrower vs Grass (slot 1)", best5, 1)
+
 
 # ---------------------------------------------------------------------------
 # Test 5: BattleAI — get_action / should_use_item / should_flee
@@ -391,8 +427,9 @@ def test_battle_ai_decisions():
     ok2 = action2["action"] == "item" and "POTION" in action2.get("item", "")
     check("HP=40/100 → use item (POTION)", int(ok2), 1)
 
-    # HP < 20% → Max Potion
-    mem3 = make_mock_state(player_hp=15, player_max_hp=100)
+    # HP < 20% → Max Potion (if available)
+    mem3 = make_mock_state(player_hp=15, player_max_hp=100,
+                           bag_items=[(0x13, 1)])  # MAX POTION x1
     ai3 = BattleAI(MockPyBoy(mem3))
     action3 = ai3.get_action()
     ok3 = action3["action"] == "item" and "MAX" in action3.get("item", "")
@@ -405,11 +442,12 @@ def test_battle_ai_decisions():
     ok4 = action4["action"] == "fight"
     check("Full HP → fight", int(ok4), 1)
 
-    # Wild battle with all PP = 0 → flee
+    # Wild battle with all PP = 0 and empty bag → flee
     mem5 = make_mock_state(
         battle_type=1,  # wild
         player_hp=100, player_max_hp=100,
         moves=[(0x21, 0), (0x37, 0), (0x27, 0), (0x6E, 0)],
+        bag_items=[],  # no items
     )
     ai5 = BattleAI(MockPyBoy(mem5))
     action5 = ai5.get_action()
@@ -420,6 +458,7 @@ def test_battle_ai_decisions():
     mem6 = make_mock_state(
         battle_type=2,  # trainer
         moves=[(0x21, 0), (0x37, 0), (0x27, 0), (0x6E, 0)],
+        bag_items=[],
     )
     ai6 = BattleAI(MockPyBoy(mem6))
     ok6 = not ai6.should_flee()
@@ -454,9 +493,41 @@ def test_internal_indices():
     check("Squirtle IS at index 0xB0", int(squirtle_correct), 1)
 
 
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------#
+# Test 7: BattleAI — read_bag and find_best_heal_item
+# ---------------------------------------------------------------------------#
+
+def test_bag_reading():
+    section("BattleAI — Bag Reading")
+
+    # Default mock state has POTION and HYPER POTION
+    mem = make_mock_state()
+    ai = BattleAI(MockPyBoy(mem))
+    bag = ai.read_bag()
+    check("Default bag has 2 items", len(bag), 2)
+    check("First item is POTION (0x10)", bag[0]["item_id"], 0x10)
+    check("First item qty is 3", bag[0]["quantity"], 3)
+
+    # find_best_heal_item should return best available (HYPER POTION > POTION)
+    item = ai.find_best_heal_item()
+    check("find_best_heal_item → HYPER POTION", item, "HYPER POTION")
+
+    # With a FULL RESTORE in bag, should prefer that
+    mem2 = make_mock_state(bag_items=[(0x19, 1)])  # FULL RESTORE
+    ai2 = BattleAI(MockPyBoy(mem2))
+    item2 = ai2.find_best_heal_item()
+    check("find_best_heal_item → FULL RESTORE", item2, "FULL RESTORE")
+
+    # Empty bag → None
+    mem3 = make_mock_state(bag_items=[])
+    ai3 = BattleAI(MockPyBoy(mem3))
+    item3 = ai3.find_best_heal_item()
+    check("Empty bag → None", item3, None)
+
+
+# ---------------------------------------------------------------------------#
+# Summary
+# ---------------------------------------------------------------------------#
 
 def main():
     print("\n" + "="*60)
@@ -497,6 +568,12 @@ def main():
         test_internal_indices()
     except Exception as e:
         print(f"\n  ERROR in test_internal_indices: {e}")
+        traceback.print_exc()
+
+    try:
+        test_bag_reading()
+    except Exception as e:
+        print(f"\n  ERROR in test_bag_reading: {e}")
         traceback.print_exc()
 
     # Summary

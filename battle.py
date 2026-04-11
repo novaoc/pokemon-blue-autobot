@@ -537,6 +537,32 @@ ENEMY_MAX_HP_HI    = 0xCFF4  # enemy max HP high byte
 ENEMY_MAX_HP_LO    = 0xCFF5  # enemy max HP low byte
 BATTLE_MENU_CURSOR = 0xCC26  # cursor position in battle menu
 
+# Bag memory addresses (Gen 1)
+BAG_ITEM_COUNT = 0xD31D   # Number of items in bag
+BAG_ITEMS_START = 0xD31E  # First item slot (id, quantity pairs)
+
+# Healing item IDs (Gen 1)
+ITEM_POTION     = 0x10
+ITEM_SUPER_POTION = 0x11
+ITEM_HYPER_POTION = 0x12
+ITEM_MAX_POTION = 0x13
+ITEM_FULL_RESTORE = 0x19
+ITEM_REVIVE     = 0x1B
+ITEM_MAX_REVIVE = 0x1C
+
+HEAL_ITEMS = {
+    ITEM_FULL_RESTORE: ("FULL RESTORE", 99999),  # heals to full
+    ITEM_MAX_POTION:   ("MAX POTION",   99999),
+    ITEM_HYPER_POTION: ("HYPER POTION", 200),
+    ITEM_SUPER_POTION: ("SUPER POTION", 50),
+    ITEM_POTION:       ("POTION",       20),
+}
+
+REVIVE_ITEMS = {
+    ITEM_MAX_REVIVE: "MAX REVIVE",
+    ITEM_REVIVE:     "REVIVE",
+}
+
 
 # ---------------------------------------------------------------------------
 # Helper functions
@@ -648,6 +674,48 @@ class BattleAI:
         return SPECIES_TYPES.get(species, (NORMAL, None))
 
     # ------------------------------------------------------------------
+    # Bag / item helpers
+    # ------------------------------------------------------------------
+
+    def read_bag(self) -> list[dict]:
+        """
+        Read the bag contents from memory.
+        Returns list of {"item_id": int, "quantity": int} dicts.
+        Gen 1 bag format: [count] [id, qty] [id, qty] ... [0xFF]
+        """
+        count = self._read(BAG_ITEM_COUNT)
+        count = min(count, 20)  # sanity cap
+        items = []
+        for i in range(count):
+            item_id = self._read(BAG_ITEMS_START + i * 2)
+            quantity = self._read(BAG_ITEMS_START + i * 2 + 1)
+            items.append({"item_id": item_id, "quantity": quantity})
+        return items
+
+    def find_best_heal_item(self) -> str | None:
+        """
+        Find the best healing item in the bag.
+        Returns item name string or None if no healing items found.
+        Prefers items in order: FULL RESTORE > MAX POTION > HYPER > SUPER > POTION.
+        """
+        bag = self.read_bag()
+        bag_ids = {item["item_id"] for item in bag}
+
+        # Check healing items from best to worst
+        for item_id in (ITEM_FULL_RESTORE, ITEM_MAX_POTION,
+                        ITEM_HYPER_POTION, ITEM_SUPER_POTION, ITEM_POTION):
+            if item_id in bag_ids:
+                return HEAL_ITEMS[item_id][0]
+
+        # Check revives if our active mon fainted
+        if self.get_player_hp() == 0:
+            for item_id in (ITEM_MAX_REVIVE, ITEM_REVIVE):
+                if item_id in bag_ids:
+                    return REVIVE_ITEMS[item_id]
+
+        return None
+
+    # ------------------------------------------------------------------
     # AI decision methods
     # ------------------------------------------------------------------
 
@@ -695,6 +763,10 @@ class BattleAI:
             else:
                 eff = get_effectiveness(move["type"], enemy_types)
                 score = power * eff
+                # STAB: Same Type Attack Bonus (1.5x in Gen 1)
+                player_types = self.get_player_types()
+                if move["type"] in player_types:
+                    score *= 1.5
 
             if score > best_score:
                 best_score = score
@@ -709,8 +781,8 @@ class BattleAI:
     def should_use_item(self) -> str | None:
         """
         Decide whether to use a healing item.
-
         Returns item name string or None.
+        Reads actual bag contents to find available healing items.
         """
         current_hp = self.get_player_hp()
         max_hp = self.get_player_max_hp()
@@ -719,10 +791,21 @@ class BattleAI:
             return None
 
         ratio = current_hp / max_hp
-        if ratio < 0.20:
-            return "MAX POTION"
-        if ratio < 0.50:
-            return "POTION"
+
+        # Only heal when below 50% HP
+        if ratio >= 0.50:
+            return None
+
+        # Find the best healing item we actually have
+        item = self.find_best_heal_item()
+        if item:
+            return item
+
+        # No healing items — check if we should use a revive instead
+        if current_hp == 0:
+            revive = self.find_best_heal_item()  # checks revives when hp=0
+            return revive
+
         return None
 
     def should_flee(self) -> bool:
@@ -814,17 +897,44 @@ class BattleAI:
         Use a healing item from the bag during battle.
         Battle menu: FIGHT(TL) PKMN(TR) / ITEM(BL) RUN(BR)
         Navigate to ITEM by pressing down then A.
-        Item bag navigation is simplified — uses first available healing item.
+        Then finds the correct item in the bag list by scrolling.
         """
         # Navigate to ITEM (one down from FIGHT)
         self._press_down(ticks=10)
         self._press_a(ticks=30)  # open bag
 
-        # In Gen 1 the bag is a simple list — scroll to find the item.
-        # For now: attempt to find it in the first 10 slots, skip otherwise.
-        for _ in range(10):
-            self._press_a(ticks=30)   # use first highlighted item
-            break  # simplified; real implementation would check item name
+        # Read bag to find the target item's position
+        bag = self.read_bag()
+        target_id = None
+        for item_id, (name, _) in HEAL_ITEMS.items():
+            if name == item_name:
+                target_id = item_id
+                break
+        if target_id is None:
+            for item_id, name in REVIVE_ITEMS.items():
+                if name == item_name:
+                    target_id = item_id
+                    break
+
+        if target_id is None:
+            # Unknown item — just press A to use whatever's highlighted
+            self._press_a(ticks=30)
+            return
+
+        # Find the item's position in the bag list
+        slot = 0
+        for i, item in enumerate(bag):
+            if item["item_id"] == target_id:
+                slot = i
+                break
+
+        # Navigate to the correct slot (cursor starts at slot 0)
+        for _ in range(slot):
+            self._press_down(ticks=10)
+
+        # Use the item
+        self._press_a(ticks=30)  # select item
+        self._press_a(ticks=30)  # confirm use on Pokemon
 
     def execute_flee(self):
         """
