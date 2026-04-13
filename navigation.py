@@ -607,23 +607,33 @@ def go_to_pokecenter(navigator: Navigator, game_state) -> bool:
         navigator.mash_through_dialog(max_presses=30)
         return True
 
-    # In a city — find the pokecenter
+    # In a city — enter the pokecenter and heal
     if current_map in CITY_TO_POKECENTER:
-        # We don't know exact door coords, but pokecenters are always entered
-        # by walking UP into the door. The ProgressionManager will handle
-        # routing to the pokecenter area. For a generic approach, this is
-        # a placeholder — real implementation needs per-city pathfinding or
-        # a vision-based approach.
-        log.warning(f"go_to_pokecenter: in city 0x{current_map:02X} but no pathfinding to pokecenter door yet")
-        return False
+        log.info(f"go_to_pokecenter: in city 0x{current_map:02X} — entering pokecenter")
+        return navigator.enter_pokecenter_and_heal()
 
-    # On a route — figure out nearest city
+    # On a route — figure out nearest city and try to walk there
     nearest = ROUTE_TO_NEAREST_CITY.get(current_map)
     if nearest:
-        log.info(f"go_to_pokecenter: nearest city for route 0x{current_map:02X} is 0x{nearest:02X}")
-        # Would need to navigate back to city first
-        log.warning("go_to_pokecenter: route→city navigation not yet implemented")
-        return False
+        log.info(f"go_to_pokecenter: nearest city for route 0x{current_map:02X} is {MAP_IDS.get(nearest, '?')} (0x{nearest:02X})")
+        # Walk UP repeatedly — routes connect to cities via northward paths.
+        # press_until_map_change will stop when we transition to the city map.
+        navigator.press_until_map_change(Direction.UP, max_steps=50)
+        game_state.update()
+        if game_state.map_id in CITY_TO_POKECENTER:
+            log.info(f"go_to_pokecenter: reached city map 0x{game_state.map_id:02X}")
+            return navigator.enter_pokecenter_and_heal()
+        elif game_state.map_id in pokecenter_maps:
+            # Walked directly into a pokecenter (happens on some routes)
+            log.info(f"go_to_pokecenter: already inside pokecenter 0x{game_state.map_id:02X}")
+            navigator.press_until_dialog(Direction.UP, max_steps=10)
+            navigator.press_a_interact()
+            navigator.mash_a(count=20, frames_between=30)
+            navigator.mash_through_dialog(max_presses=30)
+            return True
+        else:
+            log.warning(f"go_to_pokecenter: route→city navigation reached unexpected map 0x{game_state.map_id:02X}")
+            return False
 
     log.warning(f"go_to_pokecenter: don't know how to heal from map 0x{current_map:02X}")
     return False

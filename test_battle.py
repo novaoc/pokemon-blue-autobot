@@ -526,6 +526,115 @@ def test_bag_reading():
 
 
 # ---------------------------------------------------------------------------#
+# Test 8: BattleAI — party switching when active mon faints
+# ---------------------------------------------------------------------------#
+
+def test_party_switching():
+    section("BattleAI — Party Switching")
+
+    # Helper to make a mock game_state with party
+    class MockGameState:
+        def __init__(self, party):
+            self.party = party
+
+    healthy_party = [
+        {"slot": 1, "species": 0xB0, "hp": 0, "max_hp": 50},    # fainted
+        {"slot": 2, "species": 0xAF, "hp": 30, "max_hp": 45},    # healthy
+        {"slot": 3, "species": 0x98, "hp": 20, "max_hp": 40},    # healthy
+    ]
+
+    # Active mon fainted (HP=0), should switch to slot 1 (first healthy)
+    mem = make_mock_state(player_hp=0, player_max_hp=50)
+    ai = BattleAI(MockPyBoy(mem), game_state=MockGameState(healthy_party))
+    switch = ai.should_switch()
+    check("Fainted mon, healthy party → switch to slot 1", switch, 1)
+
+    # Active mon healthy, should not switch
+    mem2 = make_mock_state(player_hp=30, player_max_hp=50)
+    ai2 = BattleAI(MockPyBoy(mem2), game_state=MockGameState(healthy_party))
+    switch2 = ai2.should_switch()
+    check("Healthy mon → no switch", switch2, None)
+
+    # Active mon fainted, all others fainted too → no switch possible
+    all_fainted = [
+        {"slot": 1, "species": 0xB0, "hp": 0, "max_hp": 50},
+        {"slot": 2, "species": 0xAF, "hp": 0, "max_hp": 45},
+        {"slot": 3, "species": 0x98, "hp": 0, "max_hp": 40},
+    ]
+    mem3 = make_mock_state(player_hp=0, player_max_hp=50)
+    ai3 = BattleAI(MockPyBoy(mem3), game_state=MockGameState(all_fainted))
+    switch3 = ai3.should_switch()
+    check("All fainted → no switch", switch3, None)
+
+    # No game_state → no switch
+    mem4 = make_mock_state(player_hp=0, player_max_hp=50)
+    ai4 = BattleAI(MockPyBoy(mem4), game_state=None)
+    switch4 = ai4.should_switch()
+    check("No game_state → no switch", switch4, None)
+
+    # get_action returns switch when active mon faints
+    action = ai.get_action()
+    check("get_action with fainted mon → switch", action["action"], "switch")
+    check("get_action switch slot → 1", action["slot"], 1)
+
+
+# ---------------------------------------------------------------------------#
+# Test 9: StatsTracker
+# ---------------------------------------------------------------------------#
+
+def test_stats_tracker():
+    section("StatsTracker")
+
+    import os
+    import tempfile
+    from stats import StatsTracker
+
+    # Use a temp file to avoid polluting real stats
+    tmp = tempfile.mktemp(suffix=".json")
+
+    try:
+        s = StatsTracker(stats_file=tmp)
+
+        # Initial state
+        check("Initial battles won = 0", s.battles_won, 0)
+        check("Initial total battles = 0", s.total_battles, 0)
+
+        # Record some events
+        s.record_battle_won()
+        s.record_battle_won()
+        s.record_battle_lost()
+        s.record_pokemon_caught()
+        s.record_step()
+        s.record_step()
+        s.record_step()
+        s.record_item_used()
+
+        check("After 2 wins + 1 loss = 3 total battles", s.total_battles, 3)
+        check("Battles won = 2", s.battles_won, 2)
+        check("Battles lost = 1", s.battles_lost, 1)
+        check("Pokemon caught = 1", s.pokemon_caught, 1)
+        check("Steps taken = 3", s.steps_taken, 3)
+        check("Items used = 1", s.items_used, 1)
+        check("Win rate = 2/3", s.win_rate, 2.0 / 3.0)
+
+        # Save and reload
+        s.save()
+        s2 = StatsTracker(stats_file=tmp)
+        check("Reload: battles won persisted", s2.battles_won, 2)
+        check("Reload: pokemon caught persisted", s2.pokemon_caught, 1)
+        check("Reload: sessions incremented", s2.sessions, 2)
+
+        # Summary should not crash
+        summary = s2.summary()
+        check("Summary is a string", isinstance(summary, str), True)
+        check("Summary contains 'Battles'", "Battles" in summary, True)
+
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+
+
+# ---------------------------------------------------------------------------#
 # Summary
 # ---------------------------------------------------------------------------#
 
@@ -574,6 +683,18 @@ def main():
         test_bag_reading()
     except Exception as e:
         print(f"\n  ERROR in test_bag_reading: {e}")
+        traceback.print_exc()
+
+    try:
+        test_party_switching()
+    except Exception as e:
+        print(f"\n  ERROR in test_party_switching: {e}")
+        traceback.print_exc()
+
+    try:
+        test_stats_tracker()
+    except Exception as e:
+        print(f"\n  ERROR in test_stats_tracker: {e}")
         traceback.print_exc()
 
     # Summary

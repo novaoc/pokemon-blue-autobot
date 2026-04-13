@@ -66,14 +66,15 @@ python bot.py --rom /path/to/blueEng.gb --log DEBUG
 
 ## Architecture
 
-The bot is structured as five modules:
+The bot is structured as six modules:
 
 ```
 bot.py                   ← Orchestrator (you are here)
 ├── emulator.py          ← PyBoy 2.7.0 wrapper
 ├── memory.py            ← Gen 1 memory map + GameState reader
 ├── battle.py            ← Type chart + BattleAI decision engine
-└── navigation.py        ← Navigator (pathfinding) + ProgressionManager
+├── navigation.py        ← Navigator (pathfinding) + ProgressionManager
+└── stats.py             ← Stats tracker (battles, catches, time)
 ```
 
 ### Module Overview
@@ -100,7 +101,8 @@ Reads Gen 1 memory addresses each frame.  Exposes:
 
 #### `battle.py` — `BattleAI`
 Handles all in-battle decisions using Gen 1 type chart and move data.
-- `get_action()` → `{action: fight|item|flee, move: 0-3}`
+- `get_action()` → `{action: fight|item|switch|flee, move: 0-3}`
+- `should_switch()` — auto-switch to next healthy party member when active mon faints
 - `handle_battle_turn()` — executes one complete turn
 - `run_battle_loop(max_turns)` — loops until battle ends
 - Full Gen 1 type chart (with historical bugs: Ghost→Psychic = 0x, etc.)
@@ -110,8 +112,15 @@ Handles all in-battle decisions using Gen 1 type chart and move data.
 - `Navigator.navigate_to(x, y)` — greedy pathfinding with stuck detection
 - `Navigator.enter_building(door_x, door_y)` — building entry
 - `Navigator.mash_through_dialog(max_presses)` — text dismissal
-- `go_to_pokecenter(navigator, game_state)` — nearest Pokecenter healing
+- `go_to_pokecenter(navigator, game_state)` — nearest Pokecenter healing (cities + routes)
 - `ProgressionManager` — 17-step scripted walkthrough from Pallet Town to the Elite Four
+
+#### `stats.py` — `StatsTracker`
+Persistent gameplay statistics across sessions (saved to `bot_stats.json`).
+- Tracks: battles won/lost/fled, Pokemon caught, items used, steps, badges, Pokecenter visits
+- `record_battle_won()`, `record_pokemon_caught()`, `record_step()`, etc.
+- `save()` / auto-loads on init — stats survive bot restarts
+- `summary()` — human-readable stats report
 
 #### `bot.py` — `PokemonBot`
 Main orchestrator.  Each loop iteration:

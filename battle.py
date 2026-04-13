@@ -823,16 +823,47 @@ class BattleAI:
                 return False
         return True
 
+    def should_switch(self) -> int | None:
+        """
+        Check if the active Pokemon has fainted (HP=0) and a healthy
+        party member is available.
+
+        Returns the party slot (0-indexed) to switch to, or None if no
+        switch is needed or possible.
+        """
+        if self.get_player_hp() > 0:
+            return None  # Active mon is fine
+
+        # Active mon fainted — find next healthy party member
+        if self.game_state is None:
+            return None
+
+        party = self.game_state.party
+        if not party:
+            return None
+
+        for i, mon in enumerate(party):
+            if mon["hp"] > 0:
+                return i
+
+        return None  # Entire party fainted
+
     def get_action(self) -> dict:
         """
         Main decision point. Returns an action dict:
           {"action": "fight", "move": 0-3}
           {"action": "item",  "item": "POTION"}
+          {"action": "switch", "slot": 0-5}
           {"action": "flee"}
           {"action": "wait"}
         """
         if not self.is_in_battle():
             return {"action": "wait"}
+
+        # Check if we need to switch (active mon fainted)
+        switch_slot = self.should_switch()
+        if switch_slot is not None:
+            return {"action": "switch", "slot": switch_slot}
 
         if self.should_flee():
             return {"action": "flee"}
@@ -948,6 +979,32 @@ class BattleAI:
         self._press_down(ticks=10)       # PKMN -> RUN
         self._press_a(ticks=60)          # confirm RUN
 
+    def execute_switch(self, party_slot: int):
+        """
+        Switch to a different party Pokemon during battle.
+
+        Battle menu: FIGHT(TL) PKMN(TR) / ITEM(BL) RUN(BR)
+        Navigate to PKMN (right from FIGHT), then select the target slot.
+
+        Args:
+            party_slot: 0-indexed party slot to switch to.
+        """
+        # Navigate to PKMN (one right from FIGHT)
+        self._press("right", ticks=10)  # FIGHT -> PKMN
+        self._press_a(ticks=30)         # open party list
+
+        # Party list cursor starts at slot 0 (active mon).
+        # Navigate down to the target slot.
+        # After opening PKMN menu, cursor is at the first party member.
+        # We need to move to the target slot.
+        for _ in range(party_slot):
+            self._press_down(ticks=10)
+
+        # Select the Pokemon
+        self._press_a(ticks=30)  # select Pokemon
+        # Confirm "Switch?" prompt if it appears
+        self._press_a(ticks=60)  # confirm switch
+
     def handle_battle_turn(self):
         """
         Execute one full battle turn:
@@ -963,6 +1020,8 @@ class BattleAI:
             self.execute_fight(action["move"])
         elif act == "item":
             self.execute_item(action["item"])
+        elif act == "switch":
+            self.execute_switch(action["slot"])
         elif act == "flee":
             self.execute_flee()
         else:
