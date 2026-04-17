@@ -627,11 +627,135 @@ def test_stats_tracker():
         # Summary should not crash
         summary = s2.summary()
         check("Summary is a string", isinstance(summary, str), True)
-        check("Summary contains 'Battles'", "Battles" in summary, True)
+        check("Summary contains 'Battles'", isinstance(summary, str) and "Battles" in summary, True)
 
     finally:
         if os.path.exists(tmp):
             os.unlink(tmp)
+
+
+# ---------------------------------------------------------------------------
+# Test 9: Catching logic — find_best_ball
+# ---------------------------------------------------------------------------
+
+def test_find_best_ball():
+    section("BattleAI — find_best_ball()")
+
+    # Bag with POKE BALL only
+    mem = make_mock_state(bag_items=[(0x04, 10)])  # POKE BALL x10
+    ai = BattleAI(MockPyBoy(mem))
+    check("Only Poke Ball → POKE BALL", ai.find_best_ball(), "POKE BALL")
+
+    # Bag with GREAT BALL and POKE BALL → prefer GREAT
+    mem2 = make_mock_state(bag_items=[(0x04, 5), (0x03, 3)])
+    ai2 = BattleAI(MockPyBoy(mem2))
+    check("Great + Poke → GREAT BALL", ai2.find_best_ball(), "GREAT BALL")
+
+    # Bag with ULTRA, GREAT, POKE → prefer ULTRA
+    mem3 = make_mock_state(bag_items=[(0x04, 5), (0x03, 3), (0x02, 2)])
+    ai3 = BattleAI(MockPyBoy(mem3))
+    check("Ultra + Great + Poke → ULTRA BALL", ai3.find_best_ball(), "ULTRA BALL")
+
+    # Bag with MASTER BALL
+    mem4 = make_mock_state(bag_items=[(0x01, 1), (0x02, 10)])
+    ai4 = BattleAI(MockPyBoy(mem4))
+    check("Master + Ultra → MASTER BALL", ai4.find_best_ball(), "MASTER BALL")
+
+    # Empty bag → None
+    mem5 = make_mock_state(bag_items=[])
+    ai5 = BattleAI(MockPyBoy(mem5))
+    check("Empty bag → None", ai5.find_best_ball(), None)
+
+
+# ---------------------------------------------------------------------------
+# Test 10: Catching logic — should_catch
+# ---------------------------------------------------------------------------
+
+class MockGameState:
+    """Minimal game_state mock for catching tests."""
+    def __init__(self, party_species=None):
+        self._party_species = party_species or []
+        self.party = [{"species": s, "hp": 100, "max_hp": 100} for s in self._party_species]
+
+def test_should_catch():
+    section("BattleAI — should_catch()")
+
+    # Helper: make BattleAI with ball, party, and enemy HP
+    def make_catch_ai(enemy_species, enemy_hp, enemy_max_hp, party_species, ball_qty=10):
+        bag = [(0x04, ball_qty)]  # POKE BALL
+        mem = make_mock_state(
+            battle_type=1,  # wild
+            enemy_species=enemy_species,
+            enemy_hp=enemy_hp,
+            bag_items=bag,
+        )
+        # Override enemy max HP
+        mem[0xCFF4] = (enemy_max_hp >> 8) & 0xFF
+        mem[0xCFF5] = enemy_max_hp & 0xFF
+        ai = BattleAI(MockPyBoy(mem), game_state=MockGameState(party_species))
+        return ai
+
+    # New species at 50% HP → should catch
+    ai1 = make_catch_ai(0x01, 50, 100, [0xB0])  # Rhydon vs party with Squirtle
+    check("New species at 50% HP → POKE BALL", ai1.should_catch(), "POKE BALL")
+
+    # New species at 30% HP → should catch
+    ai2 = make_catch_ai(0xAF, 30, 100, [0xB0])  # Charmander (new) at 30%
+    check("New species at 30% HP → POKE BALL", ai2.should_catch(), "POKE BALL")
+
+    # New species at 90% HP → skip (too risky)
+    ai3 = make_catch_ai(0xAF, 90, 100, [0xB0])  # Charmander (new) at 90%
+    check("New species at 90% HP → None", ai3.should_catch(), None)
+
+    # Already owned at 50% HP → skip (not easy enough)
+    ai4 = make_catch_ai(0xB0, 50, 100, [0xB0])  # Squirtle (owned) at 50%
+    check("Owned species at 50% HP → None", ai4.should_catch(), None)
+
+    # Already owned at 20% HP → catch (easy)
+    ai5 = make_catch_ai(0xB0, 20, 100, [0xB0])  # Squirtle (owned) at 20%
+    check("Owned species at 20% HP → POKE BALL", ai5.should_catch(), "POKE BALL")
+
+    # No balls → None
+    mem6 = make_mock_state(battle_type=1, enemy_species=0xAF, enemy_hp=10, bag_items=[])
+    ai6 = BattleAI(MockPyBoy(mem6), game_state=MockGameState([0xB0]))
+    check("No balls → None", ai6.should_catch(), None)
+
+    # Trainer battle → None (can't catch trainer Pokemon)
+    mem7 = make_mock_state(battle_type=2, enemy_species=0xAF, enemy_hp=10,
+                           bag_items=[(0x04, 10)])
+    ai7 = BattleAI(MockPyBoy(mem7), game_state=MockGameState([0xB0]))
+    check("Trainer battle → None", ai7.should_catch(), None)
+
+    # get_action returns catch for new species
+    mem8 = make_mock_state(
+        battle_type=1, player_hp=100, player_max_hp=100,
+        enemy_species=0x01,  # Rhydon (not in party)
+        enemy_hp=40, bag_items=[(0x04, 10)],
+    )
+    mem8[0xCFF4] = 0; mem8[0xCFF5] = 100  # max HP
+    ai8 = BattleAI(MockPyBoy(mem8), game_state=MockGameState([0xB0]))
+    action = ai8.get_action()
+    check("get_action for new species → catch", action["action"], "catch")
+    check("get_action catch uses POKE BALL", action.get("item"), "POKE BALL")
+
+
+# ---------------------------------------------------------------------------
+# Test 11: get_party_species
+# ---------------------------------------------------------------------------
+
+def test_get_party_species():
+    section("BattleAI — get_party_species()")
+
+    mem = make_mock_state(battle_type=1)
+    gs = MockGameState([0xB0, 0xAF, 0x98])  # Squirtle, Charmander, Bulbasaur
+    ai = BattleAI(MockPyBoy(mem), game_state=gs)
+    species = ai.get_party_species()
+    check("Party species set", str(sorted(species)), str(sorted([0xB0, 0xAF, 0x98])))
+    check("Party has 3 species", len(species), 3)
+
+    # No game_state → empty set
+    ai2 = BattleAI(MockPyBoy(mem))
+    check("No game_state → empty", len(ai2.get_party_species()), 0)
 
 
 # ---------------------------------------------------------------------------#
@@ -695,6 +819,24 @@ def main():
         test_stats_tracker()
     except Exception as e:
         print(f"\n  ERROR in test_stats_tracker: {e}")
+        traceback.print_exc()
+
+    try:
+        test_find_best_ball()
+    except Exception as e:
+        print(f"\n  ERROR in test_find_best_ball: {e}")
+        traceback.print_exc()
+
+    try:
+        test_should_catch()
+    except Exception as e:
+        print(f"\n  ERROR in test_should_catch: {e}")
+        traceback.print_exc()
+
+    try:
+        test_get_party_species()
+    except Exception as e:
+        print(f"\n  ERROR in test_get_party_species: {e}")
         traceback.print_exc()
 
     # Summary

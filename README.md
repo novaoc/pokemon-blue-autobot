@@ -101,12 +101,14 @@ Reads Gen 1 memory addresses each frame.  Exposes:
 
 #### `battle.py` — `BattleAI`
 Handles all in-battle decisions using Gen 1 type chart and move data.
-- `get_action()` → `{action: fight|item|switch|flee, move: 0-3}`
+- `get_action()` → `{action: fight|item|catch|switch|flee, move: 0-3}`
+- `should_catch()` — auto-catch wild Pokemon (new species priority, HP-aware)
 - `should_switch()` — auto-switch to next healthy party member when active mon faints
 - `handle_battle_turn()` — executes one complete turn
 - `run_battle_loop(max_turns)` — loops until battle ends
 - Full Gen 1 type chart (with historical bugs: Ghost→Psychic = 0x, etc.)
 - All 152 move entries with type / base power / PP
+- Pokeball support: MASTER BALL > ULTRA BALL > GREAT BALL > POKE BALL
 
 #### `navigation.py` — `Navigator` + `ProgressionManager`
 - `Navigator.navigate_to(x, y)` — greedy pathfinding with stuck detection
@@ -114,6 +116,7 @@ Handles all in-battle decisions using Gen 1 type chart and move data.
 - `Navigator.mash_through_dialog(max_presses)` — text dismissal
 - `go_to_pokecenter(navigator, game_state)` — nearest Pokecenter healing (cities + routes)
 - `ProgressionManager` — 17-step scripted walkthrough from Pallet Town to the Elite Four
+- `save_checkpoint(step)` — auto-saves emulator state before each gym leader battle
 
 #### `stats.py` — `StatsTracker`
 Persistent gameplay statistics across sessions (saved to `bot_stats.json`).
@@ -186,9 +189,7 @@ The bot follows these 17 steps in order:
 - **Navigation is greedy/approximate** — coordinates in `navigation.py` are estimates. The bot may get stuck on walls or miss exact tile positions. The stuck-detection escape helps but isn't perfect.
 - **Battle menu timing** — battle UI navigation assumes the cursor is in default position. Menu lag or glitched states can cause misaligned inputs.
 - **Dialog detection** — `dialog_open` reads a single flag byte (`0xC4F1`). Some cutscenes use different flags and may not be detected correctly.
-- **No healing item logic** — the bag-navigation code in `BattleAI.execute_item()` is simplified and may not reliably find specific items.
 - **Multi-floor dungeons** — Mt. Moon, Rock Tunnel, Silph Co. etc. have tile coordinates hard-coded as estimates; real staircase positions may differ.
 - **Trainer battles mid-route** — trainers that initiate battle mid-navigation interrupt the progression step. The main loop handles them via BattleAI but may not resume the step correctly.
-- **No Pokémon catching** — the bot does not catch wild Pokémon. It fights or flees from every encounter.
 - **Memory addresses are for Blue (EN)** — will not work correctly with Red, Yellow, or non-English versions.
 - **PyBoy 2.x API** — confirmed working with PyBoy 2.7.0. Earlier or later versions may have different APIs.

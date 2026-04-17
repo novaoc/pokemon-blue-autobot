@@ -550,6 +550,19 @@ ITEM_FULL_RESTORE = 0x19
 ITEM_REVIVE     = 0x1B
 ITEM_MAX_REVIVE = 0x1C
 
+# Pokeball item IDs (Gen 1)
+ITEM_MASTER_BALL = 0x01
+ITEM_ULTRA_BALL  = 0x02
+ITEM_GREAT_BALL  = 0x03
+ITEM_POKE_BALL   = 0x04
+
+CATCH_ITEMS = {
+    ITEM_MASTER_BALL: ("MASTER BALL", 255),  # guaranteed catch
+    ITEM_ULTRA_BALL:  ("ULTRA BALL",   2),   # catch rate multiplier
+    ITEM_GREAT_BALL:  ("GREAT BALL",   1.5),
+    ITEM_POKE_BALL:   ("POKE BALL",    1),
+}
+
 HEAL_ITEMS = {
     ITEM_FULL_RESTORE: ("FULL RESTORE", 99999),  # heals to full
     ITEM_MAX_POTION:   ("MAX POTION",   99999),
@@ -715,6 +728,69 @@ class BattleAI:
 
         return None
 
+    def find_best_ball(self) -> str | None:
+        """
+        Find the best Pokeball in the bag.
+        Returns ball name string or None if no balls found.
+        Prefers: MASTER BALL > ULTRA BALL > GREAT BALL > POKE BALL.
+        """
+        bag = self.read_bag()
+        bag_ids = {item["item_id"] for item in bag}
+
+        for item_id in (ITEM_MASTER_BALL, ITEM_ULTRA_BALL,
+                        ITEM_GREAT_BALL, ITEM_POKE_BALL):
+            if item_id in bag_ids:
+                return CATCH_ITEMS[item_id][0]
+        return None
+
+    def get_party_species(self) -> set[int]:
+        """Return set of species IDs already in the party."""
+        if self.game_state is None:
+            return set()
+        return {mon["species"] for mon in self.game_state.party}
+
+    def should_catch(self) -> str | None:
+        """
+        Decide whether to try catching the wild Pokemon.
+        Returns ball name string or None if shouldn't catch.
+
+        Strategy:
+        - Only in wild battles
+        - Must have Pokeballs in bag
+        - Prefer catching species not already in party (Pokedex completion)
+        - For species already owned: catch if enemy HP < 25%
+          (easy catch, free heal after battle)
+        - Skip if enemy HP > 80% (too risky, low catch rate)
+        """
+        if not self.is_wild_battle():
+            return None
+
+        ball = self.find_best_ball()
+        if ball is None:
+            return None
+
+        enemy_hp = self.get_enemy_hp()
+        enemy_max_hp = self.pyboy.memory[ENEMY_MAX_HP_HI] << 8 | self.pyboy.memory[ENEMY_MAX_HP_LO]
+        if enemy_max_hp == 0:
+            return None
+
+        hp_ratio = enemy_hp / enemy_max_hp
+        enemy_species = self.get_enemy_species()
+        party_species = self.get_party_species()
+
+        # New species — always try to catch (Pokedex completion priority)
+        if enemy_species not in party_species:
+            # Only skip if HP is very high (full health = very low catch rate)
+            if hp_ratio > 0.80:
+                return None
+            return ball
+
+        # Already have this species — only catch if easy (low HP)
+        if hp_ratio < 0.25:
+            return ball
+
+        return None
+
     # ------------------------------------------------------------------
     # AI decision methods
     # ------------------------------------------------------------------
@@ -872,6 +948,11 @@ class BattleAI:
         if item:
             return {"action": "item", "item": item}
 
+        # Try catching wild Pokemon (Pokedex completion)
+        ball = self.should_catch()
+        if ball:
+            return {"action": "catch", "item": ball}
+
         move_slot = self.get_best_move()
         return {"action": "fight", "move": move_slot}
 
@@ -923,9 +1004,34 @@ class BattleAI:
         # Confirm move selection
         self._press_a(ticks=60)  # longer wait for animation start
 
+    def _find_item_id_by_name(self, item_name: str) -> int | None:
+        """Look up item ID by name across all item tables."""
+        for item_id, (name, _) in HEAL_ITEMS.items():
+            if name == item_name:
+                return item_id
+        for item_id, name in REVIVE_ITEMS.items():
+            if name == item_name:
+                return item_id
+        for item_id, (name, _) in CATCH_ITEMS.items():
+            if name == item_name:
+                return item_id
+        return None
+
+    def _navigate_to_bag_item(self, target_id: int) -> None:
+        """Navigate the bag UI to a specific item by its ID, then select it."""
+        bag = self.read_bag()
+        slot = 0
+        for i, item in enumerate(bag):
+            if item["item_id"] == target_id:
+                slot = i
+                break
+        for _ in range(slot):
+            self._press_down(ticks=10)
+        self._press_a(ticks=30)  # select item
+
     def execute_item(self, item_name: str):
         """
-        Use a healing item from the bag during battle.
+        Use an item from the bag during battle.
         Battle menu: FIGHT(TL) PKMN(TR) / ITEM(BL) RUN(BR)
         Navigate to ITEM by pressing down then A.
         Then finds the correct item in the bag list by scrolling.
@@ -934,37 +1040,13 @@ class BattleAI:
         self._press_down(ticks=10)
         self._press_a(ticks=30)  # open bag
 
-        # Read bag to find the target item's position
-        bag = self.read_bag()
-        target_id = None
-        for item_id, (name, _) in HEAL_ITEMS.items():
-            if name == item_name:
-                target_id = item_id
-                break
-        if target_id is None:
-            for item_id, name in REVIVE_ITEMS.items():
-                if name == item_name:
-                    target_id = item_id
-                    break
-
+        target_id = self._find_item_id_by_name(item_name)
         if target_id is None:
             # Unknown item — just press A to use whatever's highlighted
             self._press_a(ticks=30)
             return
 
-        # Find the item's position in the bag list
-        slot = 0
-        for i, item in enumerate(bag):
-            if item["item_id"] == target_id:
-                slot = i
-                break
-
-        # Navigate to the correct slot (cursor starts at slot 0)
-        for _ in range(slot):
-            self._press_down(ticks=10)
-
-        # Use the item
-        self._press_a(ticks=30)  # select item
+        self._navigate_to_bag_item(target_id)
         self._press_a(ticks=30)  # confirm use on Pokemon
 
     def execute_flee(self):
@@ -978,6 +1060,27 @@ class BattleAI:
         self._press("right", ticks=10)  # FIGHT -> PKMN
         self._press_down(ticks=10)       # PKMN -> RUN
         self._press_a(ticks=60)          # confirm RUN
+
+    def execute_catch(self, ball_name: str):
+        """
+        Throw a Pokeball at the wild Pokemon.
+        Opens the bag (ITEM menu), finds the ball, and uses it.
+
+        Same UI flow as execute_item() — Pokeballs are items in the bag.
+        """
+        log.info("execute_catch: throwing %s", ball_name)
+        # Navigate to ITEM (one down from FIGHT)
+        self._press_down(ticks=10)
+        self._press_a(ticks=30)  # open bag
+
+        target_id = self._find_item_id_by_name(ball_name)
+        if target_id is None:
+            log.warning("execute_catch: ball '%s' not found in bag", ball_name)
+            self._press("b", ticks=30)  # back out
+            return
+
+        self._navigate_to_bag_item(target_id)
+        self._press_a(ticks=60)  # confirm throw — longer wait for animation
 
     def execute_switch(self, party_slot: int):
         """
@@ -1020,6 +1123,8 @@ class BattleAI:
             self.execute_fight(action["move"])
         elif act == "item":
             self.execute_item(action["item"])
+        elif act == "catch":
+            self.execute_catch(action["item"])
         elif act == "switch":
             self.execute_switch(action["slot"])
         elif act == "flee":

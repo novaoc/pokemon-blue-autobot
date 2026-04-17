@@ -8,6 +8,7 @@ Depends on emulator.py (PokemonEmulator) and memory.py (GameState).
 """
 from __future__ import annotations
 
+import io
 import json
 import logging
 import os
@@ -661,6 +662,7 @@ def _has_badge(badges_byte: int, badge_bit: int) -> bool:
 # ---------------------------------------------------------------------------
 
 STATE_FILE = os.path.join(os.path.dirname(__file__), "progression_state.json")
+CHECKPOINT_DIR = os.path.join(os.path.dirname(__file__), "saves", "checkpoints")
 
 
 class ProgressionManager:
@@ -673,6 +675,18 @@ class ProgressionManager:
     - mash_through_dialog: clear dialog boxes
     - mash_a: blindly press A through cutscenes/menus
     """
+
+    # Steps that are gym leader battles (used for checkpoint saves)
+    GYM_STEPS = {
+        "pewter_brock",
+        "cerulean_misty",
+        "vermilion_ltsurge",
+        "celadon_erika",
+        "fuchsia_koga",
+        "saffron_sabrina",
+        "cinnabar_blaine",
+        "viridian_giovanni",
+    }
 
     STEP_ORDER = [
         "pallet_start",
@@ -740,6 +754,24 @@ class ProgressionManager:
                 json.dump(state, f, indent=2)
         except IOError as e:
             log.error(f"save_state: {e}")
+
+    def save_checkpoint(self, step_name: str) -> str | None:
+        """
+        Save an emulator state checkpoint before a gym battle.
+        Returns the checkpoint path or None if save failed.
+        """
+        try:
+            os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+            path = os.path.join(CHECKPOINT_DIR, f"{step_name}.state")
+            buf = io.BytesIO()
+            self.emu.pyboy.save_state(buf)
+            with open(path, "wb") as f:
+                f.write(buf.getvalue())
+            log.info("save_checkpoint: saved %s", path)
+            return path
+        except Exception as e:
+            log.warning("save_checkpoint: failed for %s — %s", step_name, e)
+            return None
 
     def _mark_complete(self, step_name: str):
         if step_name not in self.state["completed_steps"]:
@@ -982,6 +1014,7 @@ class ProgressionManager:
     def step_pewter_brock(self):
         """Heal at Pewter Pokecenter, then challenge Brock's gym."""
         log.info("STEP: pewter_brock")
+        self.save_checkpoint("pewter_brock")
 
         # Heal first — enter pokecenter
         # Walk around Pewter looking for pokecenter door (UP enters buildings)
@@ -1044,6 +1077,7 @@ class ProgressionManager:
     def step_cerulean_misty(self):
         """Heal, then challenge Misty in Cerulean Gym."""
         log.info("STEP: cerulean_misty")
+        self.save_checkpoint("cerulean_misty")
 
         # Should be near Cerulean after Mt. Moon
         if self.gs.map_id != CERULEAN_CITY:
@@ -1095,6 +1129,7 @@ class ProgressionManager:
         then beat Lt. Surge.
         """
         log.info("STEP: vermilion_ltsurge")
+        self.save_checkpoint("vermilion_ltsurge")
 
         # South from Cerulean through Route 5 to Vermilion
         self.nav.press_until_map_is(Direction.DOWN, VERMILION_CITY, max_steps=300)
@@ -1164,6 +1199,7 @@ class ProgressionManager:
     def step_celadon_erika(self):
         """Rocket Hideout under Game Corner, then Erika's gym."""
         log.info("STEP: celadon_erika")
+        self.save_checkpoint("celadon_erika")
 
         # Navigate to Celadon City
         if self.gs.map_id != CELADON_CITY:
@@ -1233,6 +1269,7 @@ class ProgressionManager:
     def step_saffron_sabrina(self):
         """Clear Silph Co., then beat Sabrina in Saffron Gym."""
         log.info("STEP: saffron_sabrina")
+        self.save_checkpoint("saffron_sabrina")
 
         # Navigate to Saffron City
         if self.gs.map_id != SAFFRON_CITY:
@@ -1269,6 +1306,7 @@ class ProgressionManager:
     def step_fuchsia_koga(self):
         """Safari Zone (Surf + Strength), then Koga's gym."""
         log.info("STEP: fuchsia_koga")
+        self.save_checkpoint("fuchsia_koga")
 
         # Navigate to Fuchsia City
         if self.gs.map_id != FUCHSIA_CITY:
@@ -1310,6 +1348,7 @@ class ProgressionManager:
     def step_cinnabar_blaine(self):
         """Surf to Cinnabar, Pokemon Mansion (Secret Key), beat Blaine."""
         log.info("STEP: cinnabar_blaine")
+        self.save_checkpoint("cinnabar_blaine")
 
         # Surf south from Fuchsia/Pallet to Cinnabar Island
         self.nav.press_until_map_is(Direction.DOWN, CINNABAR_ISLAND, max_steps=500)
@@ -1346,6 +1385,7 @@ class ProgressionManager:
     def step_viridian_giovanni(self):
         """Return to Viridian City, beat Giovanni in the gym."""
         log.info("STEP: viridian_giovanni")
+        self.save_checkpoint("viridian_giovanni")
 
         # Surf/walk back to Viridian City
         if self.gs.map_id != VIRIDIAN_CITY:
